@@ -15,74 +15,15 @@ import {
   thirdPersonWeaponSocket,
   type ActionName
 } from "./game/config";
-
-type CameraMode = "third" | "first";
-
-type Target = {
-  root: THREE.Group;
-  meshes: THREE.Object3D[];
-  hp: number;
-  maxHp: number;
-  wobble: number;
-  baseY: number;
-  baseScale: number;
-  baseLift: number;
-  hoverAmplitude: number;
-  active: boolean;
-};
-
-type Projectile = {
-  root: THREE.Group;
-  velocity: THREE.Vector3;
-  previous: THREE.Vector3;
-  life: number;
-  distance: number;
-  maxDistance: number;
-};
-
-type Grenade = {
-  root: THREE.Group;
-  velocity: THREE.Vector3;
-  life: number;
-  fuse: number;
-  bounces: number;
-  exploded: boolean;
-};
-
-type AimTrace = {
-  origin: THREE.Vector3;
-  direction: THREE.Vector3;
-  point: THREE.Vector3;
-  hitObjectName: string | null;
-  hitDistance: number | null;
-  result: "target" | "ground" | "range";
-};
-
-type ShotResult = {
-  direction: THREE.Vector3;
-  point: THREE.Vector3;
-  target?: Target;
-  aimPoint: THREE.Vector3;
-  baseDirection: THREE.Vector3;
-  spread: number;
-  moving: boolean;
-  origin: THREE.Vector3;
-  hitObjectName: string | null;
-  hitDistance: number | null;
-  groundDistance: number | null;
-  rangeDistance: number;
-  result: string;
-  aimTrace: AimTrace;
-};
-
-type PreShotState = {
-  frame: number;
-  time: number;
-  ammoBefore: number;
-  cooldownBefore: number;
-  reloadBefore: number;
-  statusBefore: string;
-};
+import type {
+  AimTrace,
+  CameraMode,
+  Grenade,
+  PreShotState,
+  Projectile,
+  ShotResult,
+  Target
+} from "./game/types";
 
 function requiredElement<T extends HTMLElement>(selector: string) {
   const element = document.querySelector<T>(selector);
