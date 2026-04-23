@@ -15,6 +15,7 @@ import {
   thirdPersonWeaponSocket,
   type ActionName
 } from "./game/config";
+import { AnimationController } from "./game/AnimationController";
 import { AudioEngine } from "./game/AudioEngine";
 import { EffectManager } from "./game/EffectManager";
 import { HUDManager } from "./game/HUDManager";
@@ -121,11 +122,9 @@ class SunlitPatrol {
   private readonly cameraTarget = new THREE.Vector3(0, 1.15, 0);
   private readonly playerVelocity = new THREE.Vector3();
 
-  private mixer: THREE.AnimationMixer | null = null;
+  private readonly animation = new AnimationController();
   private firstPersonMixer: THREE.AnimationMixer | null = null;
   private firstPersonFireAction: THREE.AnimationAction | null = null;
-  private actions = new Map<ActionName, THREE.AnimationAction>();
-  private activeAction: ActionName = "Idle";
   private weapon: THREE.Group | null = null;
   private firstPersonRig: THREE.Group | null = null;
   private bulletTemplate: THREE.Group | null = null;
@@ -372,7 +371,8 @@ class SunlitPatrol {
     this.player.add(model);
     this.player.position.set(0, 0, -50);
 
-    this.mixer = new THREE.AnimationMixer(model);
+    const mixer = new THREE.AnimationMixer(model);
+    this.animation.setMixer(mixer);
     const availableAnimations = [...animationGltf.animations];
     const shootSource =
       THREE.AnimationClip.findByName(availableAnimations, "Shoot_OneHanded") ??
@@ -384,14 +384,14 @@ class SunlitPatrol {
     const aliasesByAction = this.useRokokoRifleRig ? rokokoRifleActionClipAliases : actionClipAliases;
     Object.entries(aliasesByAction).forEach(([name, aliases]) => {
       const clip = aliases.map((alias) => THREE.AnimationClip.findByName(availableAnimations, alias)).find(Boolean);
-      if (!clip || !this.mixer) return;
-      const action = this.mixer.clipAction(clip);
+      if (!clip) return;
+      const action = mixer.clipAction(clip);
       action.enabled = true;
       action.clampWhenFinished = oneShotActions.has(name as ActionName);
       if (oneShotActions.has(name as ActionName)) action.setLoop(THREE.LoopOnce, 1);
-      this.actions.set(name as ActionName, action);
+      this.animation.setAction(name as ActionName, action);
     });
-    this.actions.get("Idle")?.play();
+    this.animation.getAction("Idle")?.play();
     if (this.useRokokoRifleRig) this.setStatus("Rokoko rifle rig prototype");
   }
 
@@ -738,7 +738,7 @@ class SunlitPatrol {
     this.projectiles.update(dt);
     this.updateGrenades(dt);
     this.effects.update(dt);
-    this.mixer?.update(dt);
+    this.animation.update(dt);
     this.firstPersonMixer?.update(dt);
     this.renderer.render(this.scene, this.camera);
     if (this.debugEnabled && this.debugLiveTimer >= 0.25) {
@@ -776,7 +776,7 @@ class SunlitPatrol {
     this.player.scale.set(1, THREE.MathUtils.lerp(1, 0.82, this.crouchBlend), 1);
     this.updateFootsteps(dt, moving, crouching, sprinting);
     if (this.jumpAnimTimer > 0) return;
-    this.fadeTo(crouching ? (moving ? "CrouchWalk" : "CrouchIdle") : sprinting && moving ? "Sprint" : moving ? "Run" : "Idle");
+    this.animation.fadeTo(crouching ? (moving ? "CrouchWalk" : "CrouchIdle") : sprinting && moving ? "Sprint" : moving ? "Run" : "Idle");
   }
 
   private updateFootsteps(dt: number, moving: boolean, crouching: boolean, sprinting: boolean) {
@@ -940,7 +940,7 @@ class SunlitPatrol {
     this.sound.playGrenadeThrow();
     this.grenadeAmmo -= 1;
     this.grenadeCooldown = 0.85;
-    this.fadeTo("GrenadeThrow", true);
+    this.animation.fadeTo("GrenadeThrow", true);
     this.input.isFiring = false;
 
     const aim = this.getAimDirection(0.035, 0);
@@ -1025,7 +1025,7 @@ class SunlitPatrol {
     this.ammo -= 1;
     this.shotCooldown = rifleTuning.cooldown;
     this.impactPulse = 1;
-    this.fadeTo("Shoot_OneHanded", true);
+    this.animation.fadeTo("Shoot_OneHanded", true);
     this.playFirstPersonFireAnimation();
     this.flashCrosshair();
     this.sound.playShot(this.cameraMode === "first", this.input.isAimingDownSights);
@@ -1500,7 +1500,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
       grenadeAmmo: this.grenadeAmmo,
       grenadeCooldown: rounded(this.grenadeCooldown, 4),
       status: hud.getStatus(),
-      activeAction: this.activeAction,
+      activeAction: this.animation.active,
       velocity: this.describeVector(this.playerVelocity),
       player: this.describeObject(this.player),
       camera: this.describeCamera(),
@@ -1713,7 +1713,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     this.reloadTimer = 0.8;
     this.reloadAnimTimer = 0.8;
     this.input.releaseAim();
-    this.fadeTo("Reload", true);
+    this.animation.fadeTo("Reload", true);
     window.setTimeout(() => {
       this.ammo = 12;
       this.sound.playReloadEnd();
@@ -1728,7 +1728,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     if (this.jumpAnimTimer > 0 || this.reloadTimer > 0) return;
     this.sound.playJump();
     this.jumpAnimTimer = 0.58;
-    this.fadeTo("Jump", true);
+    this.animation.fadeTo("Jump", true);
     this.setStatus("Jump");
   }
 
@@ -1753,20 +1753,6 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
 
   private flashCrosshair() {
     hud.flashCrosshairMiss();
-  }
-
-  private fadeTo(name: ActionName, force = false) {
-    const next = this.actions.get(name);
-    if (!next || (!force && this.activeAction === name)) return;
-    if (force) {
-      next.reset().setEffectiveWeight(1).fadeIn(0.04).play();
-      window.setTimeout(() => next.fadeOut(0.12), 260);
-      return;
-    }
-    const prev = this.actions.get(this.activeAction);
-    next.reset().fadeIn(0.18).play();
-    prev?.fadeOut(0.18);
-    this.activeAction = name;
   }
 
   private setStatus(message: string) {
