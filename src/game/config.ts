@@ -78,6 +78,23 @@ export const fallbackWeaponSocket = {
   scale: 0.86
 };
 
+export const projectileTuning = {
+  speed: 72,
+  maxDistance: 92
+} as const;
+
+export const rifleTuning = {
+  damage: 1,
+  range: 96,
+  cooldown: 0.105,
+  hipSpread: 0.035,
+  movingSpread: 0.12,
+  recoilPitch: 0.006,
+  recoilYaw: 0.004,
+  visualRecoilPitch: 0.014,
+  visualRecoilYaw: 0.005
+} as const;
+
 export const cameraTuning = {
   thirdPerson: {
     minPitch: -0.2,

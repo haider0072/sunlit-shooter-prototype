@@ -8,96 +8,31 @@ import {
   cameraTuning,
   fallbackWeaponSocket,
   oneShotActions,
+  projectileTuning,
+  rifleTuning,
   rokokoRifleActionClipAliases,
   runtimeAssets,
   thirdPersonWeaponSocket,
   type ActionName
 } from "./game/config";
-
-type CameraMode = "third" | "first";
-
-type Target = {
-  root: THREE.Group;
-  meshes: THREE.Object3D[];
-  hp: number;
-  maxHp: number;
-  wobble: number;
-  baseY: number;
-  baseScale: number;
-  baseLift: number;
-  hoverAmplitude: number;
-  active: boolean;
-};
-
-type Projectile = {
-  root: THREE.Group;
-  velocity: THREE.Vector3;
-  previous: THREE.Vector3;
-  life: number;
-  distance: number;
-  maxDistance: number;
-};
-
-type Grenade = {
-  root: THREE.Group;
-  velocity: THREE.Vector3;
-  life: number;
-  fuse: number;
-  bounces: number;
-  exploded: boolean;
-};
-
-type AimTrace = {
-  origin: THREE.Vector3;
-  direction: THREE.Vector3;
-  point: THREE.Vector3;
-  hitObjectName: string | null;
-  hitDistance: number | null;
-  result: "target" | "ground" | "range";
-};
-
-type ShotResult = {
-  direction: THREE.Vector3;
-  point: THREE.Vector3;
-  target?: Target;
-  aimPoint: THREE.Vector3;
-  baseDirection: THREE.Vector3;
-  spread: number;
-  moving: boolean;
-  origin: THREE.Vector3;
-  hitObjectName: string | null;
-  hitDistance: number | null;
-  groundDistance: number | null;
-  rangeDistance: number;
-  result: string;
-  aimTrace: AimTrace;
-};
-
-type PreShotState = {
-  frame: number;
-  time: number;
-  ammoBefore: number;
-  cooldownBefore: number;
-  reloadBefore: number;
-  statusBefore: string;
-};
-
-const projectileTuning = {
-  speed: 72,
-  maxDistance: 92
-};
-
-const rifleTuning = {
-  damage: 1,
-  range: 96,
-  cooldown: 0.105,
-  hipSpread: 0.035,
-  movingSpread: 0.12,
-  recoilPitch: 0.006,
-  recoilYaw: 0.004,
-  visualRecoilPitch: 0.014,
-  visualRecoilYaw: 0.005
-};
+import { AnimationController } from "./game/AnimationController";
+import { AudioEngine } from "./game/AudioEngine";
+import { DebugOverlay } from "./game/DebugOverlay";
+import { EffectManager } from "./game/EffectManager";
+import { HUDManager } from "./game/HUDManager";
+import { InputManager } from "./game/InputManager";
+import { palette } from "./game/palette";
+import { ProjectileSystem } from "./game/ProjectileSystem";
+import { createWorld, setupLights } from "./game/world";
+import type {
+  AimTrace,
+  CameraMode,
+  Grenade,
+  PreShotState,
+  Projectile,
+  ShotResult,
+  Target
+} from "./game/types";
 
 function requiredElement<T extends HTMLElement>(selector: string) {
   const element = document.querySelector<T>(selector);
@@ -106,35 +41,9 @@ function requiredElement<T extends HTMLElement>(selector: string) {
 }
 
 const canvas = requiredElement<HTMLCanvasElement>("#game");
-const loaderEl = requiredElement<HTMLDivElement>("#loader");
-const startButton = requiredElement<HTMLButtonElement>("#startButton");
-const scoreEl = requiredElement<HTMLSpanElement>("#score");
-const ammoEl = requiredElement<HTMLSpanElement>("#ammo");
-const healthEl = requiredElement<HTMLSpanElement>("#health");
-const statusEl = requiredElement<HTMLDivElement>("#status");
-const objectiveEl = requiredElement<HTMLSpanElement>("#objective");
-const crosshairEl = requiredElement<HTMLDivElement>(".crosshair");
 const debugPanelEl = requiredElement<HTMLPreElement>("#debugPanel");
-const controlsButton = requiredElement<HTMLButtonElement>("#controlsButton");
-const controlsPanel = requiredElement<HTMLElement>("#controlsPanel");
-const volumeSlider = requiredElement<HTMLInputElement>("#volumeSlider");
-const volumeValueEl = requiredElement<HTMLSpanElement>("#volumeValue");
+const hud = new HUDManager();
 const urlParams = new URLSearchParams(window.location.search);
-
-const palette = {
-  sky: new THREE.Color("#a9def2"),
-  sun: new THREE.Color("#fff0c2"),
-  grass: new THREE.Color("#8fc999"),
-  grassDark: new THREE.Color("#5d9a78"),
-  road: new THREE.Color("#b8c5c2"),
-  roadLine: new THREE.Color("#fff0c9"),
-  sand: new THREE.Color("#ecd59a"),
-  sea: new THREE.Color("#5aa7c7"),
-  ink: new THREE.Color("#314048"),
-  coral: new THREE.Color("#ff705c"),
-  teal: new THREE.Color("#2f9c95"),
-  cream: new THREE.Color("#fff4dc")
-};
 
 function lerpAngle(from: number, to: number, alpha: number) {
   const delta = Math.atan2(Math.sin(to - from), Math.cos(to - from));
@@ -183,313 +92,7 @@ function createStaticPoseClip(name: string, source: THREE.AnimationClip, normali
   return new THREE.AnimationClip(name, 1, tracks);
 }
 
-class SoundEngine {
-  private static readonly storageKey = "sunlit-volume";
-  private context: AudioContext | null = null;
-  private master: GainNode | null = null;
-  private compressor: DynamicsCompressorNode | null = null;
-  private toneBus: GainNode | null = null;
-  private noiseBus: GainNode | null = null;
-  private noiseBuffer: AudioBuffer | null = null;
-  private volume = this.loadVolume();
 
-  resume() {
-    const context = this.ensureContext();
-    if (!context) return;
-    if (context.state === "suspended") {
-      void context.resume();
-    }
-  }
-
-  getVolume() {
-    return this.volume;
-  }
-
-  setVolume(next: number) {
-    this.volume = THREE.MathUtils.clamp(next, 0, 1);
-    if (this.master) {
-      this.master.gain.value = this.volume;
-    }
-    try {
-      window.localStorage.setItem(SoundEngine.storageKey, String(rounded(this.volume, 3)));
-    } catch {
-      // Ignore storage failures and keep runtime volume.
-    }
-  }
-
-  playShot(firstPerson: boolean, aimingDownSights: boolean) {
-    const context = this.ensureContext();
-    if (!context || !this.toneBus) return;
-    const now = context.currentTime;
-    const gain = firstPerson ? 0.28 : 0.2;
-    const tone = context.createOscillator();
-    tone.type = aimingDownSights ? "triangle" : "square";
-    tone.frequency.setValueAtTime(firstPerson ? 210 : 170, now);
-    tone.frequency.exponentialRampToValueAtTime(firstPerson ? 92 : 76, now + 0.08);
-    const toneGain = context.createGain();
-    toneGain.gain.setValueAtTime(0.0001, now);
-    toneGain.gain.exponentialRampToValueAtTime(gain, now + 0.002);
-    toneGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
-    tone.connect(toneGain);
-    toneGain.connect(this.toneBus);
-    tone.start(now);
-    tone.stop(now + 0.1);
-
-    this.playNoiseBurst({
-      duration: firstPerson ? 0.06 : 0.08,
-      gain: firstPerson ? 0.28 : 0.2,
-      highpass: 520,
-      lowpass: 4200
-    });
-  }
-
-  playDryImpact() {
-    const context = this.ensureContext();
-    if (!context || !this.toneBus) return;
-    const now = context.currentTime;
-    const osc = context.createOscillator();
-    osc.type = "triangle";
-    osc.frequency.setValueAtTime(510, now);
-    osc.frequency.exponentialRampToValueAtTime(240, now + 0.06);
-    const gain = context.createGain();
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.09, now + 0.002);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.07);
-    osc.connect(gain);
-    gain.connect(this.toneBus);
-    osc.start(now);
-    osc.stop(now + 0.08);
-  }
-
-  playHit(kill: boolean) {
-    const context = this.ensureContext();
-    if (!context || !this.toneBus) return;
-    const now = context.currentTime;
-    const osc = context.createOscillator();
-    osc.type = kill ? "triangle" : "sine";
-    osc.frequency.setValueAtTime(kill ? 640 : 780, now);
-    osc.frequency.exponentialRampToValueAtTime(kill ? 360 : 620, now + (kill ? 0.16 : 0.08));
-    const gain = context.createGain();
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(kill ? 0.18 : 0.11, now + 0.003);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + (kill ? 0.18 : 0.1));
-    osc.connect(gain);
-    gain.connect(this.toneBus);
-    osc.start(now);
-    osc.stop(now + (kill ? 0.2 : 0.12));
-  }
-
-  playEmpty() {
-    const context = this.ensureContext();
-    if (!context || !this.toneBus) return;
-    const now = context.currentTime;
-    const osc = context.createOscillator();
-    osc.type = "square";
-    osc.frequency.setValueAtTime(220, now);
-    osc.frequency.exponentialRampToValueAtTime(160, now + 0.04);
-    const gain = context.createGain();
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.06, now + 0.002);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.05);
-    osc.connect(gain);
-    gain.connect(this.toneBus);
-    osc.start(now);
-    osc.stop(now + 0.06);
-  }
-
-  playReloadStart() {
-    const context = this.ensureContext();
-    if (!context || !this.toneBus) return;
-    const toneBus = this.toneBus;
-    const now = context.currentTime;
-    [340, 260].forEach((frequency, index) => {
-      const osc = context.createOscillator();
-      osc.type = "square";
-      osc.frequency.setValueAtTime(frequency, now + index * 0.07);
-      const gain = context.createGain();
-      gain.gain.setValueAtTime(0.0001, now + index * 0.07);
-      gain.gain.exponentialRampToValueAtTime(0.06, now + index * 0.07 + 0.002);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + index * 0.07 + 0.05);
-      osc.connect(gain);
-      gain.connect(toneBus);
-      osc.start(now + index * 0.07);
-      osc.stop(now + index * 0.07 + 0.06);
-    });
-  }
-
-  playReloadEnd() {
-    const context = this.ensureContext();
-    if (!context || !this.toneBus) return;
-    const toneBus = this.toneBus;
-    const now = context.currentTime;
-    [250, 320, 410].forEach((frequency, index) => {
-      const osc = context.createOscillator();
-      osc.type = "triangle";
-      osc.frequency.setValueAtTime(frequency, now + index * 0.03);
-      const gain = context.createGain();
-      gain.gain.setValueAtTime(0.0001, now + index * 0.03);
-      gain.gain.exponentialRampToValueAtTime(0.07, now + index * 0.03 + 0.002);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + index * 0.03 + 0.08);
-      osc.connect(gain);
-      gain.connect(toneBus);
-      osc.start(now + index * 0.03);
-      osc.stop(now + index * 0.03 + 0.09);
-    });
-  }
-
-  playGrenadeThrow() {
-    const context = this.ensureContext();
-    if (!context || !this.toneBus) return;
-    const now = context.currentTime;
-    const osc = context.createOscillator();
-    osc.type = "sawtooth";
-    osc.frequency.setValueAtTime(180, now);
-    osc.frequency.exponentialRampToValueAtTime(110, now + 0.12);
-    const gain = context.createGain();
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.07, now + 0.004);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
-    osc.connect(gain);
-    gain.connect(this.toneBus);
-    osc.start(now);
-    osc.stop(now + 0.16);
-    this.playNoiseBurst({ duration: 0.09, gain: 0.08, highpass: 260, lowpass: 2200 });
-  }
-
-  playExplosion() {
-    const context = this.ensureContext();
-    if (!context || !this.toneBus) return;
-    const now = context.currentTime;
-    const boom = context.createOscillator();
-    boom.type = "sine";
-    boom.frequency.setValueAtTime(90, now);
-    boom.frequency.exponentialRampToValueAtTime(34, now + 0.45);
-    const boomGain = context.createGain();
-    boomGain.gain.setValueAtTime(0.0001, now);
-    boomGain.gain.exponentialRampToValueAtTime(0.4, now + 0.01);
-    boomGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
-    boom.connect(boomGain);
-    boomGain.connect(this.toneBus);
-    boom.start(now);
-    boom.stop(now + 0.55);
-
-    this.playNoiseBurst({ duration: 0.42, gain: 0.36, highpass: 40, lowpass: 1600 });
-  }
-
-  playJump() {
-    const context = this.ensureContext();
-    if (!context || !this.toneBus) return;
-    const now = context.currentTime;
-    const osc = context.createOscillator();
-    osc.type = "triangle";
-    osc.frequency.setValueAtTime(200, now);
-    osc.frequency.exponentialRampToValueAtTime(290, now + 0.08);
-    const gain = context.createGain();
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.045, now + 0.003);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.1);
-    osc.connect(gain);
-    gain.connect(this.toneBus);
-    osc.start(now);
-    osc.stop(now + 0.12);
-  }
-
-  playFootstep(sprinting: boolean, stepSide: number) {
-    const context = this.ensureContext();
-    if (!context || !this.toneBus) return;
-    const now = context.currentTime;
-    const osc = context.createOscillator();
-    osc.type = "triangle";
-    const baseFrequency = sprinting ? 150 : 118;
-    osc.frequency.setValueAtTime(baseFrequency + stepSide * 12, now);
-    osc.frequency.exponentialRampToValueAtTime(sprinting ? 76 : 68, now + 0.07);
-    const gain = context.createGain();
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(sprinting ? 0.09 : 0.06, now + 0.004);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.085);
-    osc.connect(gain);
-    gain.connect(this.toneBus);
-    osc.start(now);
-    osc.stop(now + 0.09);
-
-    this.playNoiseBurst({
-      duration: sprinting ? 0.08 : 0.065,
-      gain: sprinting ? 0.09 : 0.06,
-      highpass: 90,
-      lowpass: sprinting ? 760 : 620
-    });
-  }
-
-  private ensureContext() {
-    if (this.context) return this.context;
-    const AudioContextCtor = window.AudioContext;
-    if (!AudioContextCtor) return null;
-    this.context = new AudioContextCtor();
-    this.master = this.context.createGain();
-    this.master.gain.value = this.volume;
-    this.compressor = this.context.createDynamicsCompressor();
-    this.compressor.threshold.value = -18;
-    this.compressor.knee.value = 24;
-    this.compressor.ratio.value = 3;
-    this.compressor.attack.value = 0.003;
-    this.compressor.release.value = 0.18;
-    this.toneBus = this.context.createGain();
-    this.toneBus.gain.value = 1.05;
-    this.noiseBus = this.context.createGain();
-    this.noiseBus.gain.value = 1.18;
-    this.toneBus.connect(this.compressor);
-    this.noiseBus.connect(this.compressor);
-    this.compressor.connect(this.master);
-    this.master.connect(this.context.destination);
-    this.noiseBuffer = this.createNoiseBuffer(this.context);
-    return this.context;
-  }
-
-  private loadVolume() {
-    try {
-      const raw = window.localStorage.getItem(SoundEngine.storageKey);
-      if (!raw) return 0.85;
-      const parsed = Number(raw);
-      if (!Number.isFinite(parsed)) return 0.85;
-      return THREE.MathUtils.clamp(parsed, 0, 1);
-    } catch {
-      return 0.85;
-    }
-  }
-
-  private createNoiseBuffer(context: AudioContext) {
-    const buffer = context.createBuffer(1, context.sampleRate * 0.5, context.sampleRate);
-    const channel = buffer.getChannelData(0);
-    for (let index = 0; index < channel.length; index += 1) {
-      channel[index] = Math.random() * 2 - 1;
-    }
-    return buffer;
-  }
-
-  private playNoiseBurst(options: { duration: number; gain: number; highpass: number; lowpass: number }) {
-    const context = this.ensureContext();
-    if (!context || !this.noiseBus || !this.noiseBuffer) return;
-    const now = context.currentTime;
-    const source = context.createBufferSource();
-    source.buffer = this.noiseBuffer;
-    const highpass = context.createBiquadFilter();
-    highpass.type = "highpass";
-    highpass.frequency.value = options.highpass;
-    const lowpass = context.createBiquadFilter();
-    lowpass.type = "lowpass";
-    lowpass.frequency.value = options.lowpass;
-    const gain = context.createGain();
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(options.gain, now + 0.004);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + options.duration);
-    source.connect(highpass);
-    highpass.connect(lowpass);
-    lowpass.connect(gain);
-    gain.connect(this.noiseBus);
-    source.start(now);
-    source.stop(now + options.duration + 0.02);
-  }
-}
 
 class SunlitPatrol {
   private readonly renderer = new THREE.WebGLRenderer({
@@ -506,38 +109,30 @@ class SunlitPatrol {
   private readonly objLoader = new OBJLoader();
   private readonly raycaster = new THREE.Raycaster();
   private readonly groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.08);
-  private readonly keys = new Set<string>();
+  private readonly input = new InputManager(canvas);
   private readonly targetByMesh = new Map<THREE.Object3D, Target>();
   private readonly targets: Target[] = [];
-  private readonly projectiles: Projectile[] = [];
+  private readonly projectiles = new ProjectileSystem(this.scene);
   private readonly grenades: Grenade[] = [];
-  private readonly effects: THREE.Object3D[] = [];
+  private readonly effects = new EffectManager(this.scene, this.camera);
   private readonly tmpVec = new THREE.Vector3();
   private readonly tmpVec2 = new THREE.Vector3();
   private readonly tmpQuat = new THREE.Quaternion();
-  private readonly muzzleFlashTexture = this.createMuzzleFlashTexture();
-  private readonly smokeTexture = this.createSmokeTexture();
-  private readonly sound = new SoundEngine();
+  private readonly sound = new AudioEngine();
   private readonly player = new THREE.Group();
   private readonly weaponSocket = new THREE.Group();
   private readonly cameraTarget = new THREE.Vector3(0, 1.15, 0);
   private readonly playerVelocity = new THREE.Vector3();
 
-  private mixer: THREE.AnimationMixer | null = null;
+  private readonly animation = new AnimationController();
   private firstPersonMixer: THREE.AnimationMixer | null = null;
   private firstPersonFireAction: THREE.AnimationAction | null = null;
-  private actions = new Map<ActionName, THREE.AnimationAction>();
-  private activeAction: ActionName = "Idle";
   private weapon: THREE.Group | null = null;
   private firstPersonRig: THREE.Group | null = null;
   private bulletTemplate: THREE.Group | null = null;
   private grenadeTemplate: THREE.Group | null = null;
   private rightHandBone: THREE.Object3D | null = null;
   private isReady = false;
-  private isPointerLocked = false;
-  private mouseAimActive = false;
-  private isFiring = false;
-  private isAimingDownSights = false;
   private jumpAnimTimer = 0;
   private yaw = 0;
   private pitch = -0.08;
@@ -558,15 +153,11 @@ class SunlitPatrol {
   private crouchBlend = 0;
   private footstepTimer = 0;
   private footstepSide = 1;
-  private debugEnabled = new URLSearchParams(window.location.search).has("debug");
+  private readonly debug = new DebugOverlay(debugPanelEl);
   private readonly useRokokoRifleRig = urlParams.get("rig") === "rokoko";
   private shotSequence = 0;
   private frameSequence = 0;
   private debugLiveTimer = 0;
-  private debugHistory: string[] = [];
-  private debugEvents: string[] = [];
-  private debugShotRecords: unknown[] = [];
-  private lastMouseDelta = { x: 0, y: 0, time: 0 };
   private cameraMode: CameraMode = "third";
 
   constructor() {
@@ -584,207 +175,22 @@ class SunlitPatrol {
     this.weaponSocket.name = "WeaponSocket";
     this.scene.add(this.player);
 
-    this.setupLights();
-    this.createWorld();
+    setupLights(this.scene);
+    createWorld(this.scene);
     this.bindEvents();
     this.installDebugBridge();
-  }
-
-  private createMuzzleFlashTexture() {
-    const textureCanvas = document.createElement("canvas");
-    textureCanvas.width = 128;
-    textureCanvas.height = 128;
-    const ctx = textureCanvas.getContext("2d");
-    if (!ctx) throw new Error("Unable to create muzzle flash texture");
-
-    const gradient = ctx.createRadialGradient(64, 64, 2, 64, 64, 62);
-    gradient.addColorStop(0, "rgba(255,255,245,1)");
-    gradient.addColorStop(0.18, "rgba(255,244,190,0.95)");
-    gradient.addColorStop(0.42, "rgba(255,142,45,0.55)");
-    gradient.addColorStop(0.72, "rgba(255,86,28,0.18)");
-    gradient.addColorStop(1, "rgba(255,86,28,0)");
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, 128, 128);
-
-    const streak = ctx.createLinearGradient(0, 64, 128, 64);
-    streak.addColorStop(0, "rgba(255,120,35,0)");
-    streak.addColorStop(0.32, "rgba(255,188,80,0.55)");
-    streak.addColorStop(0.5, "rgba(255,255,230,0.96)");
-    streak.addColorStop(0.68, "rgba(255,188,80,0.48)");
-    streak.addColorStop(1, "rgba(255,120,35,0)");
-    ctx.fillStyle = streak;
-    ctx.fillRect(0, 54, 128, 20);
-
-    const texture = new THREE.CanvasTexture(textureCanvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    return texture;
-  }
-
-  private createSmokeTexture() {
-    const textureCanvas = document.createElement("canvas");
-    textureCanvas.width = 96;
-    textureCanvas.height = 96;
-    const ctx = textureCanvas.getContext("2d");
-    if (!ctx) throw new Error("Unable to create smoke texture");
-    const gradient = ctx.createRadialGradient(48, 48, 3, 48, 48, 46);
-    gradient.addColorStop(0, "rgba(210,205,185,0.34)");
-    gradient.addColorStop(0.45, "rgba(150,145,125,0.16)");
-    gradient.addColorStop(1, "rgba(100,100,90,0)");
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, 0, 96, 96);
-
-    const texture = new THREE.CanvasTexture(textureCanvas);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    return texture;
+    if (urlParams.has("debug")) this.setDebugEnabled(true);
   }
 
   async init() {
     await this.loadPlayer();
     await this.loadWeaponAndTargets();
     this.isReady = true;
-    loaderEl.classList.add("hidden");
+    hud.hideLoader();
     this.setStatus("Range online");
-    this.setDebugEnabled(this.debugEnabled);
+    if (this.debug.isEnabled()) this.renderDebugPanel();
     this.updateHud();
     this.renderer.setAnimationLoop(() => this.update());
-  }
-
-  private setupLights() {
-    const hemi = new THREE.HemisphereLight("#bceeff", "#8b8f78", 2.3);
-    this.scene.add(hemi);
-
-    const sun = new THREE.DirectionalLight(palette.sun, 3.2);
-    sun.position.set(-18, 28, 12);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 90;
-    sun.shadow.camera.left = -42;
-    sun.shadow.camera.right = 42;
-    sun.shadow.camera.top = 42;
-    sun.shadow.camera.bottom = -42;
-    this.scene.add(sun);
-  }
-
-  private createWorld() {
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(140, 140, 16, 16),
-      new THREE.MeshLambertMaterial({ color: palette.grass })
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    this.scene.add(ground);
-
-    const road = new THREE.Mesh(
-      new THREE.PlaneGeometry(13, 148),
-      new THREE.MeshLambertMaterial({ color: palette.road })
-    );
-    road.rotation.x = -Math.PI / 2;
-    road.position.y = 0.012;
-    road.receiveShadow = true;
-    this.scene.add(road);
-
-    for (let z = -64; z <= 64; z += 12) {
-      const line = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.34, 5.6),
-        new THREE.MeshBasicMaterial({ color: palette.roadLine })
-      );
-      line.rotation.x = -Math.PI / 2;
-      line.position.set(0, 0.018, z);
-      this.scene.add(line);
-    }
-
-    const sand = new THREE.Mesh(
-      new THREE.PlaneGeometry(44, 140),
-      new THREE.MeshLambertMaterial({ color: palette.sand })
-    );
-    sand.rotation.x = -Math.PI / 2;
-    sand.position.set(-48, 0.016, 0);
-    this.scene.add(sand);
-
-    const sea = new THREE.Mesh(
-      new THREE.PlaneGeometry(80, 140, 1, 1),
-      new THREE.MeshBasicMaterial({ color: palette.sea, transparent: true, opacity: 0.88 })
-    );
-    sea.rotation.x = -Math.PI / 2;
-    sea.position.set(-82, -0.02, 0);
-    this.scene.add(sea);
-
-    this.createTreeInstances();
-    this.createHouses();
-  }
-
-  private createTreeInstances() {
-    const trunkGeo = new THREE.CylinderGeometry(0.12, 0.16, 1.4, 6);
-    const leafGeo = new THREE.ConeGeometry(0.82, 1.8, 7);
-    const trunkMat = new THREE.MeshLambertMaterial({ color: "#7b674b" });
-    const leafMat = new THREE.MeshLambertMaterial({ color: palette.grassDark });
-    const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, 42);
-    const leaves = new THREE.InstancedMesh(leafGeo, leafMat, 42);
-    trunks.castShadow = true;
-    leaves.castShadow = true;
-
-    const matrix = new THREE.Matrix4();
-    const positions = [
-      [-20, -38], [-24, -26], [-19, -9], [-23, 12], [-18, 32], [-27, 47],
-      [17, -45], [25, -35], [20, -19], [26, 7], [21, 26], [29, 41],
-      [39, -49], [44, -32], [38, -6], [45, 18], [40, 36], [47, 53],
-      [-42, -44], [-54, -28], [-39, -13], [-57, 4], [-42, 23], [-55, 42],
-      [59, -38], [62, -17], [58, 6], [64, 29], [56, 50], [-7, -54],
-      [7, -58], [-9, 56], [8, 60], [34, -58], [-34, 58], [52, -2],
-      [-62, -2], [32, 4], [-33, -4], [13, 48], [-13, -48], [4, 30]
-    ];
-
-    positions.forEach(([x, z], index) => {
-      const scale = 0.78 + ((index * 19) % 9) * 0.045;
-      matrix.compose(
-        new THREE.Vector3(x, 0.7 * scale, z),
-        new THREE.Quaternion(),
-        new THREE.Vector3(scale, scale, scale)
-      );
-      trunks.setMatrixAt(index, matrix);
-      matrix.compose(
-        new THREE.Vector3(x, 1.8 * scale, z),
-        new THREE.Quaternion(),
-        new THREE.Vector3(scale, scale, scale)
-      );
-      leaves.setMatrixAt(index, matrix);
-    });
-
-    this.scene.add(trunks, leaves);
-  }
-
-  private createHouses() {
-    const houseMat = new THREE.MeshLambertMaterial({ color: "#f1d6bd" });
-    const roofMat = new THREE.MeshLambertMaterial({ color: "#d56d62" });
-    const shadowMat = new THREE.MeshLambertMaterial({ color: "#c7aa92" });
-
-    const spots = [
-      [16, -56, 0.12],
-      [32, -23, -0.06],
-      [22, 55, 0.16],
-      [-35, -58, -0.12],
-      [-33, 34, 0.08]
-    ];
-
-    spots.forEach(([x, z, rot], index) => {
-      const group = new THREE.Group();
-      const body = new THREE.Mesh(new THREE.BoxGeometry(5.8, 3.1, 4.4), houseMat.clone());
-      body.position.y = 1.55;
-      body.castShadow = true;
-      body.receiveShadow = true;
-      const roof = new THREE.Mesh(new THREE.ConeGeometry(4.5, 2.2, 4), roofMat.clone());
-      roof.position.y = 4.2;
-      roof.rotation.y = Math.PI / 4;
-      roof.castShadow = true;
-      const shed = new THREE.Mesh(new THREE.BoxGeometry(2.6, 2.1, 3), shadowMat);
-      shed.position.set(index % 2 ? -4 : 4, 1.05, 0.5);
-      shed.castShadow = true;
-      group.add(body, roof, shed);
-      group.position.set(x, 0, z);
-      group.rotation.y = rot;
-      this.scene.add(group);
-    });
   }
 
   private async loadPlayer() {
@@ -827,7 +233,8 @@ class SunlitPatrol {
     this.player.add(model);
     this.player.position.set(0, 0, -50);
 
-    this.mixer = new THREE.AnimationMixer(model);
+    const mixer = new THREE.AnimationMixer(model);
+    this.animation.setMixer(mixer);
     const availableAnimations = [...animationGltf.animations];
     const shootSource =
       THREE.AnimationClip.findByName(availableAnimations, "Shoot_OneHanded") ??
@@ -839,14 +246,14 @@ class SunlitPatrol {
     const aliasesByAction = this.useRokokoRifleRig ? rokokoRifleActionClipAliases : actionClipAliases;
     Object.entries(aliasesByAction).forEach(([name, aliases]) => {
       const clip = aliases.map((alias) => THREE.AnimationClip.findByName(availableAnimations, alias)).find(Boolean);
-      if (!clip || !this.mixer) return;
-      const action = this.mixer.clipAction(clip);
+      if (!clip) return;
+      const action = mixer.clipAction(clip);
       action.enabled = true;
       action.clampWhenFinished = oneShotActions.has(name as ActionName);
       if (oneShotActions.has(name as ActionName)) action.setLoop(THREE.LoopOnce, 1);
-      this.actions.set(name as ActionName, action);
+      this.animation.setAction(name as ActionName, action);
     });
-    this.actions.get("Idle")?.play();
+    this.animation.getAction("Idle")?.play();
     if (this.useRokokoRifleRig) this.setStatus("Rokoko rifle rig prototype");
   }
 
@@ -1079,150 +486,104 @@ class SunlitPatrol {
   }
 
   private bindEvents() {
-    window.addEventListener("resize", () => this.resize());
     this.resize();
+    this.input.bind({
+      isReady: () => this.isReady,
+      onResize: () => this.resize(),
+      onAnyKeyDown: (event) => {
+        this.sound.resume();
+        if (!event.repeat) this.logDebugEvent("key-down", { code: event.code, keys: this.input.describeKeys() });
+      },
+      onKeyUp: (event) => {
+        this.logDebugEvent("key-up", { code: event.code, keys: this.input.describeKeys() });
+      },
+      onReload: () => this.reload(),
+      onGrenade: () => this.throwGrenade(),
+      onJump: () => this.jump(),
+      onToggleDebug: () => this.setDebugEnabled(!this.debug.isEnabled()),
 
-    window.addEventListener("keydown", (event) => {
-      this.sound.resume();
-      this.keys.add(event.code);
-      if (!event.repeat) this.logDebugEvent("key-down", { code: event.code, keys: this.describeKeys() });
-      if (event.code === "KeyR") this.reload();
-      if (event.code === "KeyG" && !event.repeat) this.throwGrenade();
-      if (event.code === "F3") {
-        event.preventDefault();
-        this.setDebugEnabled(!this.debugEnabled);
-      }
-      if (event.code === "KeyV" && !event.repeat) {
-        this.toggleCameraMode();
-      }
-      if (event.code === "KeyH" && !event.repeat) {
-        this.toggleControlsPanel();
-      }
-      if (event.code === "Space") {
-        event.preventDefault();
-        this.jump();
-      }
-    });
-    window.addEventListener("keyup", (event) => {
-      this.keys.delete(event.code);
-      this.logDebugEvent("key-up", { code: event.code, keys: this.describeKeys() });
-    });
-
-    document.addEventListener("pointerlockchange", () => {
-      this.isPointerLocked = document.pointerLockElement === canvas;
-      startButton.textContent = this.isPointerLocked ? "Live" : "Start";
-      if (this.isPointerLocked) this.mouseAimActive = true;
-      this.logDebugEvent("pointer-lock", {
-        locked: this.isPointerLocked,
-        pointerLockElement: document.pointerLockElement === canvas ? "canvas" : document.pointerLockElement?.nodeName ?? null
-      });
-    });
-
-    window.addEventListener("mousemove", (event) => {
-      if (!this.isPointerLocked && !this.mouseAimActive) return;
-      this.lastMouseDelta = { x: event.movementX, y: event.movementY, time: rounded(performance.now(), 1) };
-      if (this.debugEnabled && (Math.abs(event.movementX) > 8 || Math.abs(event.movementY) > 8)) {
-        this.logDebugEvent("mouse-look", {
-          dx: event.movementX,
-          dy: event.movementY,
-          yawDeg: rounded(THREE.MathUtils.radToDeg(this.yaw), 2),
-          pitchDeg: rounded(THREE.MathUtils.radToDeg(this.pitch), 2)
+      onToggleCamera: () => this.toggleCameraMode(),
+      onToggleControls: () => this.toggleControlsPanel(),
+      onMouseLook: (dx, dy) => {
+        if (this.debug.isEnabled() && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+          this.logDebugEvent("mouse-look", {
+            dx,
+            dy,
+            yawDeg: rounded(THREE.MathUtils.radToDeg(this.yaw), 2),
+            pitchDeg: rounded(THREE.MathUtils.radToDeg(this.pitch), 2)
+          });
+        }
+        this.applyMouseLook(dx, dy);
+      },
+      onFireStart: (event) => {
+        this.sound.resume();
+        this.logDebugEvent("canvas-fire", { button: event.button, pointerLocked: this.input.isPointerLocked });
+        if (!this.input.isPointerLocked) this.input.requestPointerLock();
+        this.shoot();
+      },
+      onAdsStart: () => {
+        this.sound.resume();
+        if (!this.input.isPointerLocked) this.input.requestPointerLock();
+        this.logDebugEvent("ads-start", {
+          pointerLocked: this.input.isPointerLocked,
+          cameraMode: this.cameraMode
+        });
+      },
+      onPointerLockChange: (locked, element) => {
+        hud.setStartButtonText(locked ? "Live" : "Start");
+        this.logDebugEvent("pointer-lock", {
+          locked,
+          pointerLockElement: element === canvas ? "canvas" : element?.nodeName ?? null
+        });
+      },
+      onFocusLost: (reason) => {
+        this.logDebugEvent(reason === "blur" ? "window-blur" : "document-hidden", {
+          keys: this.input.describeKeys()
         });
       }
-      this.applyMouseLook(event.movementX, event.movementY);
     });
 
-    canvas.addEventListener("mousedown", (event) => {
-      if (event.button !== 0 || !this.isReady) return;
-      this.sound.resume();
-      this.mouseAimActive = true;
-      this.isFiring = true;
-      this.logDebugEvent("canvas-fire", { button: event.button, pointerLocked: this.isPointerLocked });
-      if (!this.isPointerLocked) {
-        this.requestPointerLock();
-      }
-      this.shoot();
-    });
-    window.addEventListener("mouseup", (event) => {
-      if (event.button === 0) this.isFiring = false;
-      if (event.button === 2) this.isAimingDownSights = false;
-    });
-    canvas.addEventListener("pointerup", (event) => {
-      if (event.button === 0) this.isFiring = false;
-      if (event.button === 2) this.isAimingDownSights = false;
-    });
-    canvas.addEventListener("pointercancel", () => {
-      this.isFiring = false;
-      this.isAimingDownSights = false;
-    });
-    window.addEventListener("mouseleave", () => {
-      this.isFiring = false;
-      this.isAimingDownSights = false;
-    });
-
-    canvas.addEventListener("contextmenu", (event) => event.preventDefault());
-    canvas.addEventListener("pointerdown", (event) => {
-      if (event.button !== 2 || !this.isReady) return;
-      event.preventDefault();
-      this.sound.resume();
-      this.mouseAimActive = true;
-      this.isAimingDownSights = true;
-      if (!this.isPointerLocked) this.requestPointerLock();
-      this.logDebugEvent("ads-start", { pointerLocked: this.isPointerLocked, cameraMode: this.cameraMode });
-    });
-
-    startButton.addEventListener("click", () => {
+    hud.onStartClick(() => {
       if (!this.isReady) return;
       this.sound.resume();
-      this.mouseAimActive = true;
-      this.logDebugEvent("start-click", { pointerLocked: this.isPointerLocked });
-      this.requestPointerLock();
+      this.input.mouseAimActive = true;
+      this.logDebugEvent("start-click", { pointerLocked: this.input.isPointerLocked });
+      this.input.requestPointerLock();
       this.setStatus("Mouse aim active");
     });
 
-    controlsButton.addEventListener("click", () => {
+    hud.onControlsClick(() => {
       this.toggleControlsPanel();
     });
 
-    volumeSlider.addEventListener("input", () => {
-      const normalized = Number(volumeSlider.value) / 100;
+    hud.onVolumeInput((normalized) => {
       this.sound.setVolume(normalized);
       this.syncVolumeUi();
     });
-
-    window.addEventListener("blur", () => {
-      this.keys.clear();
-      this.isFiring = false;
-      this.isAimingDownSights = false;
-      this.logDebugEvent("window-blur", { keys: this.describeKeys() });
-    });
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) {
-        this.keys.clear();
-        this.isFiring = false;
-        this.isAimingDownSights = false;
-        this.logDebugEvent("document-hidden", { keys: this.describeKeys() });
-      }
-    });
   }
 
+  private resizeRaf = 0;
   private resize() {
-    const width = window.innerWidth;
-    const height = window.innerHeight;
-    this.camera.aspect = width / height;
-    this.camera.updateProjectionMatrix();
-    this.renderer.setSize(width, height, false);
+    if (this.resizeRaf !== 0) return;
+    this.resizeRaf = window.requestAnimationFrame(() => {
+      this.resizeRaf = 0;
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      this.camera.aspect = width / height;
+      this.camera.updateProjectionMatrix();
+      this.renderer.setSize(width, height, false);
+    });
   }
 
-  private requestPointerLock() {
-    try {
-      const lock = canvas.requestPointerLock();
-      if (lock instanceof Promise) {
-        lock.catch(() => undefined);
-      }
-    } catch {
-      // Some automated or embedded browsers reject pointer lock; keyboard controls still work.
+  dispose() {
+    if (this.resizeRaf !== 0) {
+      window.cancelAnimationFrame(this.resizeRaf);
+      this.resizeRaf = 0;
     }
+    this.renderer.setAnimationLoop(null);
+    this.input.dispose();
+    this.animation.dispose();
+    this.renderer.dispose();
   }
 
   private applyMouseLook(deltaX: number, deltaY: number) {
@@ -1247,35 +608,35 @@ class SunlitPatrol {
     this.cameraRecoilYaw = THREE.MathUtils.damp(this.cameraRecoilYaw, 0, 16, dt);
     this.weaponKick = THREE.MathUtils.damp(this.weaponKick, 0, 18, dt);
     this.weaponKickSide = THREE.MathUtils.damp(this.weaponKickSide, 0, 14, dt);
-    if (this.isFiring) this.shoot();
+    if (this.input.isFiring) this.shoot();
 
     this.updatePlayer(dt);
     this.updateWeaponPose(dt);
     this.updateCamera(dt);
     this.updateTargets(dt);
-    this.updateProjectiles(dt);
+    this.projectiles.update(dt);
     this.updateGrenades(dt);
-    this.updateEffects(dt);
-    this.mixer?.update(dt);
+    this.effects.update(dt);
+    this.animation.update(dt);
     this.firstPersonMixer?.update(dt);
     this.renderer.render(this.scene, this.camera);
-    if (this.debugEnabled && this.debugLiveTimer >= 0.25) {
+    if (this.debug.isEnabled() && this.debugLiveTimer >= 0.25) {
       this.debugLiveTimer = 0;
       this.renderDebugPanel();
     }
   }
 
   private updatePlayer(dt: number) {
-    const forward = Number(this.keys.has("KeyW") || this.keys.has("ArrowUp")) - Number(this.keys.has("KeyS") || this.keys.has("ArrowDown"));
-    const strafe = Number(this.keys.has("KeyD") || this.keys.has("ArrowRight")) - Number(this.keys.has("KeyA") || this.keys.has("ArrowLeft"));
+    const forward = Number(this.input.isKeyDown("KeyW") || this.input.isKeyDown("ArrowUp")) - Number(this.input.isKeyDown("KeyS") || this.input.isKeyDown("ArrowDown"));
+    const strafe = Number(this.input.isKeyDown("KeyD") || this.input.isKeyDown("ArrowRight")) - Number(this.input.isKeyDown("KeyA") || this.input.isKeyDown("ArrowLeft"));
 
     if (forward !== 0 || strafe !== 0) {
       const sin = Math.sin(this.yaw);
       const cos = Math.cos(this.yaw);
       this.tmpVec.set(sin * forward - cos * strafe, 0, cos * forward + sin * strafe).normalize();
       const movingBackward = forward < 0 && strafe === 0;
-      const crouching = this.keys.has("KeyC") || this.keys.has("ControlLeft") || this.keys.has("ControlRight");
-      const sprinting = !crouching && this.keys.has("ShiftLeft") && forward > 0;
+      const crouching = this.input.isKeyDown("KeyC") || this.input.isKeyDown("ControlLeft") || this.input.isKeyDown("ControlRight");
+      const sprinting = !crouching && this.input.isKeyDown("ShiftLeft") && forward > 0;
       this.playerVelocity.copy(this.tmpVec).multiplyScalar(crouching ? 2.7 : sprinting ? 9.2 : movingBackward ? 4.6 : 7.4);
     } else {
       this.playerVelocity.multiplyScalar(Math.pow(0.002, dt));
@@ -1288,13 +649,13 @@ class SunlitPatrol {
     this.player.rotation.y = lerpAngle(this.player.rotation.y, this.yaw, 1 - Math.pow(0.001, dt));
 
     const moving = this.playerVelocity.lengthSq() > 0.4;
-    const crouching = this.keys.has("KeyC") || this.keys.has("ControlLeft") || this.keys.has("ControlRight");
-    const sprinting = !crouching && this.keys.has("ShiftLeft") && this.keys.has("KeyW");
+    const crouching = this.input.isKeyDown("KeyC") || this.input.isKeyDown("ControlLeft") || this.input.isKeyDown("ControlRight");
+    const sprinting = !crouching && this.input.isKeyDown("ShiftLeft") && this.input.isKeyDown("KeyW");
     this.crouchBlend = THREE.MathUtils.damp(this.crouchBlend, crouching ? 1 : 0, 12, dt);
     this.player.scale.set(1, THREE.MathUtils.lerp(1, 0.82, this.crouchBlend), 1);
     this.updateFootsteps(dt, moving, crouching, sprinting);
     if (this.jumpAnimTimer > 0) return;
-    this.fadeTo(crouching ? (moving ? "CrouchWalk" : "CrouchIdle") : sprinting && moving ? "Sprint" : moving ? "Run" : "Idle");
+    this.animation.fadeTo(crouching ? (moving ? "CrouchWalk" : "CrouchIdle") : sprinting && moving ? "Sprint" : moving ? "Run" : "Idle");
   }
 
   private updateFootsteps(dt: number, moving: boolean, crouching: boolean, sprinting: boolean) {
@@ -1322,7 +683,7 @@ class SunlitPatrol {
       const moveSway = this.playerVelocity.lengthSq() > 0.4 ? 0.018 : 0.006;
       const fpSwayX = Math.sin(performance.now() * 0.004) * moveSway;
       const fpSwayY = Math.cos(performance.now() * 0.005) * moveSway;
-      const ads = this.cameraMode === "first" && this.isAimingDownSights ? 1 : 0;
+      const ads = this.cameraMode === "first" && this.input.isAimingDownSights ? 1 : 0;
       const reloadT = this.reloadAnimTimer > 0 ? 1 - Math.abs(this.reloadAnimTimer / 0.8 - 0.5) * 2 : 0;
       const baseX = THREE.MathUtils.lerp(0.72, 0.05, ads);
       const baseY = THREE.MathUtils.lerp(-0.95, -0.66, ads);
@@ -1338,8 +699,8 @@ class SunlitPatrol {
         fpSwayX * 1.2 + reloadT * 0.18
       );
     }
-    if (dt > 0.045 && this.debugEnabled) {
-      this.logDebugEvent("long-frame", { dt: rounded(dt, 4), effects: this.effects.length, projectiles: this.projectiles.length });
+    if (dt > 0.045 && this.debug.isEnabled()) {
+      this.logDebugEvent("long-frame", { dt: rounded(dt, 4), effects: this.effects.count, projectiles: this.projectiles.count });
     }
   }
 
@@ -1354,7 +715,7 @@ class SunlitPatrol {
         this.camera.position.y + forward.y * 10,
         this.camera.position.z + forward.z * 10
       );
-      const targetFov = this.isAimingDownSights ? cameraTuning.firstPerson.adsFov : cameraTuning.firstPerson.hipFov;
+      const targetFov = this.input.isAimingDownSights ? cameraTuning.firstPerson.adsFov : cameraTuning.firstPerson.hipFov;
       this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 10, dt);
       this.camera.updateProjectionMatrix();
       return;
@@ -1403,82 +764,7 @@ class SunlitPatrol {
       this.setStatus("New wave");
     }
 
-    objectiveEl.textContent = `${activeCount} targets`;
-  }
-
-  private updateEffects(dt: number) {
-    for (let i = this.effects.length - 1; i >= 0; i -= 1) {
-      const effect = this.effects[i];
-      effect.userData.life -= dt;
-      effect.position.addScaledVector(effect.userData.velocity, dt);
-      if (effect.userData.spin) {
-        effect.rotation.x += effect.userData.spin.x * dt;
-        effect.rotation.y += effect.userData.spin.y * dt;
-        effect.rotation.z += effect.userData.spin.z * dt;
-      }
-      if (!effect.userData.noScale) effect.scale.multiplyScalar(1 + dt * 2.5);
-      const opacity = Math.max(0, effect.userData.life / effect.userData.maxLife);
-      if ((effect as THREE.Sprite).isSprite) {
-        const mat = (effect as THREE.Sprite).material as THREE.SpriteMaterial;
-        mat.opacity = opacity * (effect.userData.baseOpacity ?? 1);
-      } else if ((effect as THREE.Mesh).isMesh) {
-        const mat = (effect as THREE.Mesh).material as THREE.MeshBasicMaterial;
-        mat.opacity = opacity;
-      } else if ((effect as THREE.Light).isLight) {
-        (effect as THREE.Light).intensity *= opacity;
-      } else {
-        effect.traverse((child) => {
-          if (!(child as THREE.Mesh).isMesh) return;
-          const material = (child as THREE.Mesh).material;
-          if (Array.isArray(material)) {
-            material.forEach((mat) => {
-              if ("opacity" in mat) mat.opacity = opacity;
-            });
-          } else if ("opacity" in material) {
-            material.opacity = opacity;
-          }
-        });
-      }
-      if (effect.userData.life <= 0) {
-        this.scene.remove(effect);
-        if ((effect as THREE.Sprite).isSprite) {
-          ((effect as THREE.Sprite).material as THREE.SpriteMaterial).dispose();
-          this.effects.splice(i, 1);
-          continue;
-        }
-        effect.traverse((child) => {
-          if (!(child as THREE.Mesh).isMesh) return;
-          const mesh = child as THREE.Mesh;
-          const material = mesh.material;
-          if (Array.isArray(material)) {
-            material.forEach((mat) => mat.dispose());
-          } else {
-            material.dispose();
-          }
-          mesh.geometry.dispose();
-        });
-        this.effects.splice(i, 1);
-      }
-    }
-  }
-
-  private updateProjectiles(dt: number) {
-    for (let i = this.projectiles.length - 1; i >= 0; i -= 1) {
-      const projectile = this.projectiles[i];
-      projectile.life -= dt;
-      projectile.previous.copy(projectile.root.position);
-      projectile.root.position.addScaledVector(projectile.velocity, dt);
-
-      const travel = projectile.root.position.distanceTo(projectile.previous);
-      projectile.distance += travel;
-      if (travel > 0.001) {
-        projectile.root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), projectile.velocity.clone().normalize());
-      }
-
-      if (projectile.life <= 0 || projectile.distance >= projectile.maxDistance) {
-        this.removeProjectile(i);
-      }
-    }
+    hud.setObjective(`${activeCount} targets`);
   }
 
   private updateGrenades(dt: number) {
@@ -1499,7 +785,7 @@ class SunlitPatrol {
           grenade.velocity.x *= 0.72;
           grenade.velocity.z *= 0.72;
           grenade.bounces += 1;
-          this.spawnGroundDust(grenade.root.position);
+          this.effects.spawnGroundDust(grenade.root.position);
           this.logDebugEvent("grenade-bounce", {
             bounces: grenade.bounces,
             position: this.describeVector(grenade.root.position),
@@ -1533,8 +819,8 @@ class SunlitPatrol {
     this.sound.playGrenadeThrow();
     this.grenadeAmmo -= 1;
     this.grenadeCooldown = 0.85;
-    this.fadeTo("GrenadeThrow", true);
-    this.isFiring = false;
+    this.animation.fadeTo("GrenadeThrow", true);
+    this.input.isFiring = false;
 
     const aim = this.getAimDirection(0.035, 0);
     const forward = new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw)).normalize();
@@ -1578,7 +864,7 @@ class SunlitPatrol {
   private explodeGrenade(position: THREE.Vector3) {
     this.setStatus("Grenade blast");
     this.sound.playExplosion();
-    this.spawnExplosion(position);
+    this.effects.spawnExplosion(position);
     const blastRadius = 4.4;
     this.targets.forEach((target) => {
       if (!target.active) return;
@@ -1590,7 +876,7 @@ class SunlitPatrol {
       target.hp -= damage;
       this.score += damage * 10;
       target.root.scale.multiplyScalar(0.9);
-      this.spawnImpact(targetPosition.add(new THREE.Vector3(0, 0.65, 0)), palette.coral);
+      this.effects.spawnImpact(targetPosition.add(new THREE.Vector3(0, 0.65, 0)), palette.coral);
       if (target.hp <= 0) {
         target.active = false;
         target.root.visible = false;
@@ -1618,24 +904,24 @@ class SunlitPatrol {
     this.ammo -= 1;
     this.shotCooldown = rifleTuning.cooldown;
     this.impactPulse = 1;
-    this.fadeTo("Shoot_OneHanded", true);
+    this.animation.fadeTo("Shoot_OneHanded", true);
     this.playFirstPersonFireAnimation();
     this.flashCrosshair();
-    this.sound.playShot(this.cameraMode === "first", this.isAimingDownSights);
+    this.sound.playShot(this.cameraMode === "first", this.input.isAimingDownSights);
 
     const muzzle = this.getMuzzleWorldPosition();
     const shot = this.resolveRifleShot(muzzle);
     const visualMuzzle = this.getVisualMuzzleWorldPosition(shot.direction);
-    this.spawnMuzzleBurst(visualMuzzle, shot.direction);
-    this.spawnTracer(visualMuzzle, shot.point);
-    this.spawnShellEjection(visualMuzzle, shot.direction);
+    this.effects.spawnMuzzleBurst(visualMuzzle, shot.direction, this.cameraMode === "first");
+    this.effects.spawnTracer(visualMuzzle, shot.point);
+    this.effects.spawnShellEjection(visualMuzzle, shot.direction);
     this.logShotTelemetry(muzzle, visualMuzzle, shot, preShot);
     this.spawnDebugShotMarkers(muzzle, visualMuzzle, shot.point);
     if (shot.target) {
       this.damageTarget(shot.target, shot.point);
     } else {
       this.sound.playDryImpact();
-      this.spawnImpact(shot.point, palette.cream);
+      this.effects.spawnImpact(shot.point, palette.cream);
       this.setStatus("Range impact");
     }
     this.applyShotRecoil();
@@ -1845,7 +1131,7 @@ class SunlitPatrol {
       ammoBefore: this.ammo,
       cooldownBefore: rounded(this.shotCooldown, 4),
       reloadBefore: rounded(this.reloadTimer, 4),
-      statusBefore: statusEl.textContent || ""
+      statusBefore: hud.getStatus()
     };
   }
 
@@ -1862,43 +1148,31 @@ class SunlitPatrol {
     }).__sunlitDebug = {
       dump: () => ({
         live: this.getDebugLiveState(),
-        shots: this.debugShotRecords,
-        events: this.debugEvents
+        shots: this.debug.getShotRecords(),
+        events: this.debug.getEvents()
       }),
-      shots: () => this.debugShotRecords,
+      shots: () => this.debug.getShotRecords(),
       state: () => this.getDebugLiveState(),
-      events: () => this.debugEvents,
+      events: () => this.debug.getEvents(),
       setDebug: (enabled: boolean) => this.setDebugEnabled(enabled),
       fire: () => this.shoot()
     };
   }
 
   private setDebugEnabled(enabled: boolean) {
-    this.debugEnabled = enabled;
-    debugPanelEl.classList.toggle("active", enabled);
-    debugPanelEl.setAttribute("aria-hidden", enabled ? "false" : "true");
-    if (!enabled) {
-      debugPanelEl.textContent = "";
-      return;
-    }
+    this.debug.setEnabled(enabled);
+    if (!enabled) return;
     this.logDebugEvent("debug-enabled", { via: "setDebugEnabled" });
     this.renderDebugPanel();
   }
 
   private toggleControlsPanel(force?: boolean) {
-    const active = force ?? !controlsPanel.classList.contains("active");
-    controlsPanel.classList.toggle("active", active);
-    controlsPanel.setAttribute("aria-hidden", active ? "false" : "true");
-    controlsButton.setAttribute("aria-expanded", active ? "true" : "false");
-    controlsButton.setAttribute("aria-label", active ? "Hide controls (H)" : "Show controls (H)");
-    controlsButton.setAttribute("title", active ? "Hide controls (H)" : "Controls (H)");
+    const active = hud.toggleControls(force);
     this.logDebugEvent("controls-panel", { active });
   }
 
   private syncVolumeUi() {
-    const percent = Math.round(this.sound.getVolume() * 100);
-    volumeSlider.value = String(percent);
-    volumeValueEl.textContent = `${percent}%`;
+    hud.setVolumeUi(Math.round(this.sound.getVolume() * 100));
   }
 
   private logShotTelemetry(
@@ -1907,7 +1181,7 @@ class SunlitPatrol {
     shot: ShotResult,
     preShot: PreShotState
   ) {
-    if (!this.debugEnabled) return;
+    if (!this.debug.isEnabled()) return;
 
     this.shotSequence += 1;
     const cameraCenter = this.getCameraCenterRay();
@@ -1940,11 +1214,11 @@ class SunlitPatrol {
       pitchDeg: rounded(THREE.MathUtils.radToDeg(this.pitch), 2),
       cameraRecoilPitchDeg: rounded(THREE.MathUtils.radToDeg(this.cameraRecoilPitch), 2),
       cameraRecoilYawDeg: rounded(THREE.MathUtils.radToDeg(this.cameraRecoilYaw), 2),
-      pointerLocked: this.isPointerLocked,
-      mouseAimActive: this.mouseAimActive,
-      ads: this.isAimingDownSights,
+      pointerLocked: this.input.isPointerLocked,
+      mouseAimActive: this.input.mouseAimActive,
+      ads: this.input.isAimingDownSights,
       cameraMode: this.cameraMode,
-      keys: Array.from(this.keys).sort().join(","),
+      keys: this.input.describeKeys(),
       moving: shot.moving,
       spreadDeg: rounded(shot.spread, 3),
       velocity: this.describeVector(this.playerVelocity),
@@ -1980,7 +1254,7 @@ class SunlitPatrol {
       rangeDistance: rounded(shot.rangeDistance, 3),
       crosshairErrorPx: this.crosshairError(shot.point),
       activeTargets: this.describeActiveTargets(),
-      recentEvents: this.debugEvents.slice(0, 8),
+      recentEvents: this.debug.getEvents().slice(0, 8),
       tuning: {
         range: rifleTuning.range,
         cooldown: rifleTuning.cooldown,
@@ -1991,8 +1265,6 @@ class SunlitPatrol {
       }
     };
 
-    this.debugShotRecords.unshift(frame);
-    this.debugShotRecords = this.debugShotRecords.slice(0, 20);
     const title = `[shot ${frame.shot}] ${frame.result} dist=${frame.rangeDistance} spread=${frame.spreadDeg}`;
     console.groupCollapsed(title);
     console.table({
@@ -2037,22 +1309,20 @@ dist muzzle=${frame.muzzleToImpact} visual=${frame.visualToImpact} origin=${fram
 camera pos=${JSON.stringify(frame.camera.position)} fwd=${JSON.stringify(frame.camera.forward)}
 socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${JSON.stringify(frame.rightHand?.world ?? null)}`;
 
-    this.debugHistory.unshift(line);
-    this.debugHistory = this.debugHistory.slice(0, 6);
+    this.debug.pushShot(line, frame);
     this.renderDebugPanel();
   }
 
   private logDebugEvent(name: string, data: Record<string, unknown> = {}) {
-    if (!this.debugEnabled) return;
+    if (!this.debug.isEnabled()) return;
     const line = `[${rounded(performance.now(), 1)} f${this.frameSequence}] ${name} ${JSON.stringify(data)}`;
-    this.debugEvents.unshift(line);
-    this.debugEvents = this.debugEvents.slice(0, 40);
+    this.debug.logEvent(line);
     console.debug(`[sunlit-debug:${name}]`, data);
     this.renderDebugPanel();
   }
 
   private renderDebugPanel() {
-    if (!this.debugEnabled) return;
+    if (!this.debug.isEnabled()) return;
     const live = this.getDebugLiveState();
     const liveText = [
       "LIVE DEBUG (F3 toggle, console: window.__sunlitDebug.dump())",
@@ -2065,9 +1335,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
       `muzzle=${JSON.stringify(live.muzzle.world)} screen=${JSON.stringify(live.muzzle.screen)} visual=${JSON.stringify(live.visualMuzzle.world)} screen=${JSON.stringify(live.visualMuzzle.screen)}`,
       `socket=${JSON.stringify(live.weaponSocket?.world ?? null)} hand=${JSON.stringify(live.rightHand?.world ?? null)} targets=${live.activeTargetCount} effects=${live.effects} projectiles=${live.projectiles} grenades=${live.grenades}`
     ].join("\n");
-    const eventsText = this.debugEvents.length > 0 ? `RECENT INPUT/EVENTS\n${this.debugEvents.slice(0, 8).join("\n")}` : "RECENT INPUT/EVENTS\nnone";
-    const shotsText = this.debugHistory.length > 0 ? `SHOT HISTORY\n${this.debugHistory.join("\n\n")}` : "SHOT HISTORY\nFire a shot for telemetry.";
-    debugPanelEl.textContent = `${liveText}\n\n${eventsText}\n\n${shotsText}`;
+    this.debug.render(liveText);
   }
 
   private getDebugLiveState() {
@@ -2080,12 +1348,12 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
       frame: this.frameSequence,
       time: rounded(performance.now(), 1),
       ready: this.isReady,
-      pointerLocked: this.isPointerLocked,
-      mouseAimActive: this.mouseAimActive,
-      ads: this.isAimingDownSights,
+      pointerLocked: this.input.isPointerLocked,
+      mouseAimActive: this.input.mouseAimActive,
+      ads: this.input.isAimingDownSights,
       cameraMode: this.cameraMode,
-      keys: this.describeKeys(),
-      lastMouseDelta: this.lastMouseDelta,
+      keys: this.input.describeKeys(),
+      lastMouseDelta: this.input.lastMouseDelta,
       viewport: this.describeViewport(),
       yawDeg: rounded(THREE.MathUtils.radToDeg(this.yaw), 2),
       pitchDeg: rounded(THREE.MathUtils.radToDeg(this.pitch), 2),
@@ -2099,8 +1367,8 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
       reloadAnimTimer: rounded(this.reloadAnimTimer, 4),
       grenadeAmmo: this.grenadeAmmo,
       grenadeCooldown: rounded(this.grenadeCooldown, 4),
-      status: statusEl.textContent || "",
-      activeAction: this.activeAction,
+      status: hud.getStatus(),
+      activeAction: this.animation.active,
       velocity: this.describeVector(this.playerVelocity),
       player: this.describeObject(this.player),
       camera: this.describeCamera(),
@@ -2119,8 +1387,8 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
       rightHand: this.describeObject(this.rightHandBone),
       activeTargetCount: this.targets.filter((target) => target.active).length,
       targets: this.describeActiveTargets(),
-      effects: this.effects.length,
-      projectiles: this.projectiles.length,
+      effects: this.effects.count,
+      projectiles: this.projectiles.count,
       grenades: this.grenades.length,
       renderer: {
         pixelRatio: rounded(this.renderer.getPixelRatio(), 2),
@@ -2128,10 +1396,6 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
         triangles: this.renderer.info.render.triangles
       }
     };
-  }
-
-  private describeKeys() {
-    return Array.from(this.keys).sort().join(",");
   }
 
   private describeViewport() {
@@ -2255,7 +1519,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
   }
 
   private spawnDebugShotMarkers(muzzle: THREE.Vector3, visualMuzzle: THREE.Vector3, impact: THREE.Vector3) {
-    if (!this.debugEnabled) return;
+    if (!this.debug.isEnabled()) return;
     [
       { point: muzzle, color: "#2f9c95", size: 0.045 },
       { point: visualMuzzle, color: "#fff4dc", size: 0.055 },
@@ -2271,83 +1535,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
       marker.userData.maxLife = 0.7;
       marker.userData.velocity = new THREE.Vector3(0, 0.025, 0);
       marker.userData.noScale = true;
-      this.effects.push(marker);
-      this.scene.add(marker);
-    });
-  }
-
-  private spawnProjectile(position: THREE.Vector3, impact: THREE.Vector3) {
-    const shotLine = impact.clone().sub(position);
-    const fullDistance = shotLine.length();
-    if (fullDistance < 0.05) return;
-    const distance = Math.min(fullDistance, projectileTuning.maxDistance);
-    const direction = shotLine.normalize();
-    const root = new THREE.Group();
-    root.position.copy(position);
-    root.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), direction);
-
-    if (this.bulletTemplate) {
-      const bullet = this.bulletTemplate.clone(true);
-      const bounds = new THREE.Box3().setFromObject(bullet);
-      const size = bounds.getSize(new THREE.Vector3());
-      const center = bounds.getCenter(new THREE.Vector3());
-      const maxSide = Math.max(size.x, size.y, size.z, 0.001);
-      bullet.position.sub(center);
-      bullet.scale.setScalar(0.24 / maxSide);
-      root.add(bullet);
-    }
-
-    const body = new THREE.Mesh(
-      new THREE.SphereGeometry(0.045, 10, 10),
-      new THREE.MeshBasicMaterial({ color: "#fff8d7", transparent: true, opacity: 0.98, depthTest: false })
-    );
-    body.renderOrder = 104;
-    body.userData.transient = true;
-    root.add(body);
-
-    const glow = new THREE.Mesh(
-      new THREE.SphereGeometry(0.11, 10, 10),
-      new THREE.MeshBasicMaterial({ color: palette.coral, transparent: true, opacity: 0.34, depthTest: false, depthWrite: false })
-    );
-    glow.renderOrder = 103;
-    glow.userData.transient = true;
-    root.add(glow);
-
-    const trail = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.018, 0.004, 0.82, 6),
-      new THREE.MeshBasicMaterial({ color: palette.cream, transparent: true, opacity: 0.48, depthTest: false, depthWrite: false })
-    );
-    trail.renderOrder = 102;
-    trail.position.z = -0.44;
-    trail.rotation.x = Math.PI / 2;
-    trail.userData.transient = true;
-    root.add(trail);
-
-    this.projectiles.push({
-      root,
-      velocity: direction.clone().multiplyScalar(projectileTuning.speed),
-      previous: position.clone(),
-      life: distance / projectileTuning.speed,
-      distance: 0,
-      maxDistance: distance
-    });
-    this.scene.add(root);
-  }
-
-  private removeProjectile(index: number) {
-    const [projectile] = this.projectiles.splice(index, 1);
-    if (!projectile) return;
-    this.scene.remove(projectile.root);
-    projectile.root.traverse((child) => {
-      if (!(child as THREE.Mesh).isMesh || !child.userData.transient) return;
-      const mesh = child as THREE.Mesh;
-      mesh.geometry.dispose();
-      const material = mesh.material;
-      if (Array.isArray(material)) {
-        material.forEach((m) => m.dispose());
-      } else {
-        material.dispose();
-      }
+      this.effects.addTransient(marker);
     });
   }
 
@@ -2372,7 +1560,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     target.hp -= rifleTuning.damage;
     this.score += 10;
     target.root.scale.multiplyScalar(0.92);
-    this.spawnImpact(point, target.hp <= 0 ? palette.coral : palette.teal);
+    this.effects.spawnImpact(point, target.hp <= 0 ? palette.coral : palette.teal);
     this.sound.playHit(target.hp <= 0);
 
     if (target.hp <= 0) {
@@ -2383,287 +1571,8 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     } else {
       this.setStatus("Hit confirmed");
     }
-    crosshairEl.classList.remove("hit");
-    window.requestAnimationFrame(() => crosshairEl.classList.add("hit"));
+    hud.flashCrosshairHit();
     this.updateHud();
-  }
-
-  private spawnImpact(position: THREE.Vector3, color: THREE.Color) {
-    this.spawnBulletMark(position, color);
-    for (let i = 0; i < 7; i += 1) {
-      const mesh = new THREE.Mesh(
-        new THREE.SphereGeometry(0.026 + i * 0.003, 8, 8),
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.72 })
-      );
-      mesh.position.copy(position);
-      mesh.userData.life = 0.24 + i * 0.012;
-      mesh.userData.maxLife = mesh.userData.life;
-      mesh.userData.velocity = new THREE.Vector3(
-        (Math.random() - 0.5) * 1.8,
-        Math.random() * 1.45,
-        (Math.random() - 0.5) * 1.8
-      );
-      this.effects.push(mesh);
-      this.scene.add(mesh);
-    }
-  }
-
-  private spawnGroundDust(position: THREE.Vector3) {
-    const dust = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: this.smokeTexture,
-        color: "#9e947d",
-        transparent: true,
-        opacity: 0.26,
-        depthWrite: false
-      })
-    );
-    dust.position.copy(position).add(new THREE.Vector3(0, 0.08, 0));
-    dust.scale.setScalar(0.34);
-    dust.userData.life = 0.22;
-    dust.userData.maxLife = 0.22;
-    dust.userData.velocity = new THREE.Vector3(0, 0.18, 0);
-    dust.userData.baseOpacity = 0.26;
-    this.effects.push(dust);
-    this.scene.add(dust);
-  }
-
-  private spawnExplosion(position: THREE.Vector3) {
-    const flash = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: this.muzzleFlashTexture,
-        color: "#fff2c0",
-        blending: THREE.AdditiveBlending,
-        transparent: true,
-        opacity: 1,
-        depthTest: false,
-        depthWrite: false
-      })
-    );
-    flash.position.copy(position).add(new THREE.Vector3(0, 0.55, 0));
-    flash.scale.set(2.2, 1.5, 1);
-    flash.renderOrder = 130;
-    flash.userData.life = 0.18;
-    flash.userData.maxLife = 0.18;
-    flash.userData.velocity = new THREE.Vector3(0, 0.45, 0);
-    flash.userData.baseOpacity = 1;
-    this.effects.push(flash);
-    this.scene.add(flash);
-
-    const light = new THREE.PointLight("#ff8c3a", 8.5, 9);
-    light.position.copy(position).add(new THREE.Vector3(0, 0.8, 0));
-    light.userData.life = 0.18;
-    light.userData.maxLife = 0.18;
-    light.userData.velocity = new THREE.Vector3();
-    this.effects.push(light);
-    this.scene.add(light);
-
-    for (let i = 0; i < 18; i += 1) {
-      const angle = (i / 18) * Math.PI * 2;
-      const outward = new THREE.Vector3(Math.cos(angle), 0.2 + Math.random() * 0.6, Math.sin(angle)).normalize();
-      const ember = new THREE.Mesh(
-        new THREE.SphereGeometry(0.035 + Math.random() * 0.025, 8, 8),
-        new THREE.MeshBasicMaterial({
-          color: i % 3 === 0 ? "#fff2b2" : "#ff7a2e",
-          transparent: true,
-          opacity: 0.86
-        })
-      );
-      ember.position.copy(position).add(new THREE.Vector3(0, 0.35, 0));
-      ember.userData.life = 0.42 + Math.random() * 0.22;
-      ember.userData.maxLife = ember.userData.life;
-      ember.userData.velocity = outward.multiplyScalar(2.4 + Math.random() * 2.2);
-      this.effects.push(ember);
-      this.scene.add(ember);
-    }
-
-    for (let i = 0; i < 5; i += 1) {
-      const smoke = new THREE.Sprite(
-        new THREE.SpriteMaterial({
-          map: this.smokeTexture,
-          color: "#80796b",
-          transparent: true,
-          opacity: 0.32,
-          depthWrite: false
-        })
-      );
-      smoke.position.copy(position).add(new THREE.Vector3((Math.random() - 0.5) * 0.55, 0.35 + Math.random() * 0.35, (Math.random() - 0.5) * 0.55));
-      smoke.scale.setScalar(0.62 + Math.random() * 0.42);
-      smoke.userData.life = 0.78 + Math.random() * 0.35;
-      smoke.userData.maxLife = smoke.userData.life;
-      smoke.userData.velocity = new THREE.Vector3((Math.random() - 0.5) * 0.42, 0.62 + Math.random() * 0.42, (Math.random() - 0.5) * 0.42);
-      smoke.userData.baseOpacity = 0.32;
-      this.effects.push(smoke);
-      this.scene.add(smoke);
-    }
-  }
-
-  private spawnBulletMark(position: THREE.Vector3, color: THREE.Color) {
-    const onGround = position.y <= 0.13;
-    const normal = onGround ? new THREE.Vector3(0, 1, 0) : this.camera.position.clone().sub(position).normalize();
-    const markColor = color.equals(palette.coral) ? "#8d332d" : "#263239";
-    const mark = new THREE.Mesh(
-      new THREE.CircleGeometry(onGround ? 0.075 : 0.06, 14),
-      new THREE.MeshBasicMaterial({
-        color: markColor,
-        transparent: true,
-        opacity: 0.54,
-        depthWrite: false,
-        side: THREE.DoubleSide
-      })
-    );
-    mark.position.copy(position).addScaledVector(normal, 0.012);
-    mark.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
-    mark.renderOrder = 40;
-    mark.userData.life = 4.5;
-    mark.userData.maxLife = 4.5;
-    mark.userData.velocity = new THREE.Vector3();
-    mark.userData.noScale = true;
-    this.effects.push(mark);
-    this.scene.add(mark);
-  }
-
-  private spawnTracer(start: THREE.Vector3, end: THREE.Vector3) {
-    const direction = end.clone().sub(start);
-    direction.normalize();
-
-    const flash = new THREE.PointLight(palette.coral, 2.8, 4.2);
-    flash.position.copy(start);
-    flash.userData.life = 0.055;
-    flash.userData.maxLife = 0.055;
-    flash.userData.velocity = new THREE.Vector3();
-    this.effects.push(flash);
-    this.scene.add(flash);
-  }
-
-  private spawnMuzzleBurst(position: THREE.Vector3, direction: THREE.Vector3) {
-    const firstPerson = this.cameraMode === "first";
-    const flashPosition = position.clone().addScaledVector(direction, 0.08);
-    const flame = new THREE.Mesh(
-      new THREE.ConeGeometry(firstPerson ? 0.09 : 0.18, firstPerson ? 0.28 : 0.52, 8, 1, true),
-      new THREE.MeshBasicMaterial({
-        color: "#ff9b3d",
-        blending: THREE.AdditiveBlending,
-        depthTest: false,
-        depthWrite: false,
-        transparent: true,
-        opacity: 0.86,
-        side: THREE.DoubleSide
-      })
-    );
-    flame.renderOrder = 126;
-    flame.position.copy(flashPosition).addScaledVector(direction, 0.24);
-    flame.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.clone().normalize());
-    flame.userData.life = 0.065;
-    flame.userData.maxLife = 0.065;
-    flame.userData.velocity = direction.clone().multiplyScalar(0.16);
-    flame.userData.noScale = true;
-    this.effects.push(flame);
-    this.scene.add(flame);
-
-    const burst = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: this.muzzleFlashTexture,
-        color: "#fff4dc",
-        blending: THREE.AdditiveBlending,
-        depthTest: false,
-        depthWrite: false,
-        transparent: true,
-        opacity: 1
-      })
-    );
-    burst.renderOrder = 128;
-    burst.position.copy(flashPosition);
-    burst.scale.set(firstPerson ? 0.22 : 0.54, firstPerson ? 0.12 : 0.28, 1);
-    burst.userData.life = 0.075;
-    burst.userData.maxLife = 0.075;
-    burst.userData.velocity = direction.clone().multiplyScalar(0.12);
-    burst.userData.noScale = true;
-    this.effects.push(burst);
-    this.scene.add(burst);
-
-    const streak = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: this.muzzleFlashTexture,
-        color: "#ff9b3d",
-        blending: THREE.AdditiveBlending,
-        depthTest: false,
-        depthWrite: false,
-        transparent: true,
-        opacity: 0.62
-      })
-    );
-    streak.renderOrder = 127;
-    streak.position.copy(flashPosition).addScaledVector(direction, firstPerson ? 0.18 : 0.32);
-    streak.scale.set(firstPerson ? 0.28 : 0.72, firstPerson ? 0.045 : 0.09, 1);
-    streak.userData.life = 0.055;
-    streak.userData.maxLife = 0.055;
-    streak.userData.velocity = direction.clone().multiplyScalar(0.38);
-    streak.userData.noScale = true;
-    streak.userData.baseOpacity = 0.62;
-    this.effects.push(streak);
-    this.scene.add(streak);
-
-    for (let i = 0; i < 2; i += 1) {
-      const smoke = new THREE.Sprite(
-        new THREE.SpriteMaterial({
-          map: this.smokeTexture,
-          color: "#b8b096",
-          depthTest: true,
-          depthWrite: false,
-          transparent: true,
-          opacity: 0.22
-        })
-      );
-      smoke.renderOrder = 25;
-      smoke.position.copy(flashPosition).addScaledVector(direction, 0.15 + i * 0.12);
-      smoke.scale.setScalar((firstPerson ? 0.12 : 0.22) + i * (firstPerson ? 0.04 : 0.08));
-      smoke.userData.life = 0.22 + i * 0.05;
-      smoke.userData.maxLife = smoke.userData.life;
-      smoke.userData.velocity = direction.clone().multiplyScalar(0.32 + i * 0.18).add(new THREE.Vector3(0, 0.05, 0));
-      smoke.userData.baseOpacity = 0.22;
-      this.effects.push(smoke);
-      this.scene.add(smoke);
-    }
-
-    const light = new THREE.PointLight(palette.coral, 3.8, 3.6);
-    light.position.copy(flashPosition);
-    light.userData.life = 0.065;
-    light.userData.maxLife = 0.065;
-    light.userData.velocity = new THREE.Vector3();
-    this.effects.push(light);
-    this.scene.add(light);
-  }
-
-  private spawnShellEjection(muzzlePosition: THREE.Vector3, shotDirection: THREE.Vector3) {
-    const forward = shotDirection.clone().normalize();
-    const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0));
-    if (right.lengthSq() < 0.001) right.set(1, 0, 0);
-    right.normalize();
-    const up = new THREE.Vector3().crossVectors(right, forward).normalize();
-
-    const shell = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.016, 0.016, 0.08, 8),
-      new THREE.MeshStandardMaterial({ color: "#f6d38d", metalness: 0.7, roughness: 0.3 })
-    );
-    shell.renderOrder = 112;
-    shell.position.copy(muzzlePosition).addScaledVector(right, 0.09).addScaledVector(up, -0.02);
-    shell.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), right.clone().addScaledVector(up, 0.4).normalize());
-    shell.userData.life = 0.58;
-    shell.userData.maxLife = 0.58;
-    shell.userData.noScale = true;
-    shell.userData.velocity = right
-      .clone()
-      .multiplyScalar(1.8 + Math.random() * 0.6)
-      .addScaledVector(up, 1.3 + Math.random() * 0.7)
-      .addScaledVector(forward, -0.28);
-    shell.userData.spin = new THREE.Vector3(
-      14 + Math.random() * 8,
-      18 + Math.random() * 8,
-      10 + Math.random() * 8
-    );
-    this.effects.push(shell);
-    this.scene.add(shell);
   }
 
   private reload() {
@@ -2671,9 +1580,8 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     this.sound.playReloadStart();
     this.reloadTimer = 0.8;
     this.reloadAnimTimer = 0.8;
-    this.isFiring = false;
-    this.isAimingDownSights = false;
-    this.fadeTo("Reload", true);
+    this.input.releaseAim();
+    this.animation.fadeTo("Reload", true);
     window.setTimeout(() => {
       this.ammo = 12;
       this.sound.playReloadEnd();
@@ -2688,7 +1596,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     if (this.jumpAnimTimer > 0 || this.reloadTimer > 0) return;
     this.sound.playJump();
     this.jumpAnimTimer = 0.58;
-    this.fadeTo("Jump", true);
+    this.animation.fadeTo("Jump", true);
     this.setStatus("Jump");
   }
 
@@ -2712,40 +1620,22 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
   }
 
   private flashCrosshair() {
-    crosshairEl.classList.remove("flash");
-    window.requestAnimationFrame(() => {
-      crosshairEl.classList.add("flash");
-    });
-  }
-
-  private fadeTo(name: ActionName, force = false) {
-    const next = this.actions.get(name);
-    if (!next || (!force && this.activeAction === name)) return;
-    if (force) {
-      next.reset().setEffectiveWeight(1).fadeIn(0.04).play();
-      window.setTimeout(() => next.fadeOut(0.12), 260);
-      return;
-    }
-    const prev = this.actions.get(this.activeAction);
-    next.reset().fadeIn(0.18).play();
-    prev?.fadeOut(0.18);
-    this.activeAction = name;
+    hud.flashCrosshairMiss();
   }
 
   private setStatus(message: string) {
-    statusEl.textContent = message;
+    hud.setStatus(message);
   }
 
   private updateHud() {
-    scoreEl.textContent = `${this.score}`;
-    ammoEl.textContent = this.reloadTimer > 0 ? "..." : `${this.ammo} / 12  G:${this.grenadeAmmo}`;
-    healthEl.textContent = `${this.health}`;
+    hud.setScore(this.score);
+    hud.setAmmo(this.ammo, this.reloadTimer > 0, this.grenadeAmmo);
+    hud.setHealth(this.health);
   }
 }
 
 const game = new SunlitPatrol();
 game.init().catch((error) => {
   console.error(error);
-  loaderEl.classList.add("hidden");
-  statusEl.textContent = "Load failed";
+  hud.showLoadError("Load failed");
 });
