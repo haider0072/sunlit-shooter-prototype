@@ -25,7 +25,7 @@ export const runtimeAssets = {
     targetSmall: "/assets/blaster/target-small.glb",
     crateMedium: "/assets/blaster/crate-medium.glb",
     crateWide: "/assets/blaster/crate-wide.glb",
-    grenade: "/assets/raw/kenney/blaster-kit/Models/GLB format/grenade-a.glb"
+    grenade: "/assets/blaster/grenade-a.glb"
   },
   firstPerson: {
     rifleHands: "/assets/vendor/fps-rifle-hands/rifle/rifle.glb"

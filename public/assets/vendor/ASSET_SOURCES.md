@@ -41,3 +41,10 @@ These assets are kept as prototype/vendor assets so they can be replaced without
 - Status: downloaded locally as a reference source, but not tracked in repo because the raw FBX set is large.
 - Runtime file tracked in repo: `public/assets/custom/mixamo/rifle_light.glb`
 - Runtime use: optional experimental rig at `?rig=rokoko`. These are Mixamo-skeleton FBX files, so they still need retarget cleanup before becoming the default third-person player.
+
+## Kenney grenade runtime copy
+
+- Source: Kenney "Blaster Kit" already tracked under `assets/raw/kenney/blaster-kit/`
+- License listed by source: Creative Commons CC0
+- Runtime file tracked in repo: `public/assets/blaster/grenade-a.glb`
+- Runtime use: grenade throw mesh. It is copied into `public/` because `assets/raw/` is intentionally excluded from Vercel deployments.
