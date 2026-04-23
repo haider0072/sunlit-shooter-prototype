@@ -8,6 +8,7 @@ import {
   cameraTuning,
   fallbackWeaponSocket,
   oneShotActions,
+  rokokoRifleActionClipAliases,
   runtimeAssets,
   thirdPersonWeaponSocket,
   type ActionName
@@ -110,6 +111,7 @@ const statusEl = requiredElement<HTMLDivElement>("#status");
 const objectiveEl = requiredElement<HTMLSpanElement>("#objective");
 const crosshairEl = requiredElement<HTMLDivElement>(".crosshair");
 const debugPanelEl = requiredElement<HTMLPreElement>("#debugPanel");
+const urlParams = new URLSearchParams(window.location.search);
 
 const palette = {
   sky: new THREE.Color("#a9def2"),
@@ -157,17 +159,18 @@ function sampleTrack(track: THREE.KeyframeTrack, time: number) {
   return Array.from({ length: valueSize }, (_, valueIndex) => THREE.MathUtils.lerp(values[startOffset + valueIndex], values[endOffset + valueIndex], alpha));
 }
 
-function createStaticPoseClip(name: string, source: THREE.AnimationClip, normalizedTime: number) {
+function createStaticPoseClip(name: string, source: THREE.AnimationClip, normalizedTime: number, zeroRootMotion = false) {
   const poseTime = THREE.MathUtils.clamp(normalizedTime, 0, 1) * source.duration;
-  const tracks = source.tracks.map((track) => {
+  const tracks = source.tracks.flatMap((track) => {
+    if (zeroRootMotion && track.name.endsWith(".position")) return [];
     const poseValues = sampleTrack(track, poseTime);
     const values = [...poseValues, ...poseValues];
-    if (track instanceof THREE.QuaternionKeyframeTrack) return new THREE.QuaternionKeyframeTrack(track.name, [0, 1], values);
-    if (track instanceof THREE.VectorKeyframeTrack) return new THREE.VectorKeyframeTrack(track.name, [0, 1], values);
-    if (track instanceof THREE.ColorKeyframeTrack) return new THREE.ColorKeyframeTrack(track.name, [0, 1], values);
-    if (track instanceof THREE.BooleanKeyframeTrack) return new THREE.BooleanKeyframeTrack(track.name, [0, 1], values);
-    if (track instanceof THREE.StringKeyframeTrack) return new THREE.StringKeyframeTrack(track.name, [0, 1], values);
-    return new THREE.NumberKeyframeTrack(track.name, [0, 1], values);
+    if (track instanceof THREE.QuaternionKeyframeTrack) return [new THREE.QuaternionKeyframeTrack(track.name, [0, 1], values)];
+    if (track instanceof THREE.VectorKeyframeTrack) return [new THREE.VectorKeyframeTrack(track.name, [0, 1], values)];
+    if (track instanceof THREE.ColorKeyframeTrack) return [new THREE.ColorKeyframeTrack(track.name, [0, 1], values)];
+    if (track instanceof THREE.BooleanKeyframeTrack) return [new THREE.BooleanKeyframeTrack(track.name, [0, 1], values)];
+    if (track instanceof THREE.StringKeyframeTrack) return [new THREE.StringKeyframeTrack(track.name, [0, 1], values)];
+    return [new THREE.NumberKeyframeTrack(track.name, [0, 1], values)];
   });
   return new THREE.AnimationClip(name, 1, tracks);
 }
@@ -237,6 +240,7 @@ class SunlitPatrol {
   private grenadeAmmo = 3;
   private crouchBlend = 0;
   private debugEnabled = new URLSearchParams(window.location.search).has("debug");
+  private readonly useRokokoRifleRig = urlParams.get("rig") === "rokoko";
   private shotSequence = 0;
   private frameSequence = 0;
   private debugLiveTimer = 0;
@@ -464,7 +468,7 @@ class SunlitPatrol {
   }
 
   private async loadPlayer() {
-    const characterGltf = await this.loadGLTF(runtimeAssets.player.character);
+    const characterGltf = await this.loadGLTF(this.useRokokoRifleRig ? runtimeAssets.player.rokokoRiflePrototype : runtimeAssets.player.character);
     const animationGltf = characterGltf.animations.length > 0 ? characterGltf : await this.loadGLTF("/assets/vendor/animations/ual1-standard.glb");
     const model = characterGltf.scene;
     model.traverse((child) => {
@@ -505,11 +509,15 @@ class SunlitPatrol {
 
     this.mixer = new THREE.AnimationMixer(model);
     const availableAnimations = [...animationGltf.animations];
-    const shootSource = THREE.AnimationClip.findByName(availableAnimations, "Shoot_OneHanded") ?? THREE.AnimationClip.findByName(availableAnimations, "Pistol_Aim_Neutral");
+    const shootSource =
+      THREE.AnimationClip.findByName(availableAnimations, "Shoot_OneHanded") ??
+      THREE.AnimationClip.findByName(availableAnimations, "Pistol_Aim_Neutral") ??
+      THREE.AnimationClip.findByName(availableAnimations, "mixamorig:Reference|clip|Base_Layer");
     if (shootSource) {
-      availableAnimations.push(createStaticPoseClip("CombatReadyPose", shootSource, 0.42));
+      availableAnimations.push(createStaticPoseClip("CombatReadyPose", shootSource, this.useRokokoRifleRig ? 0.02 : 0.42, this.useRokokoRifleRig));
     }
-    Object.entries(actionClipAliases).forEach(([name, aliases]) => {
+    const aliasesByAction = this.useRokokoRifleRig ? rokokoRifleActionClipAliases : actionClipAliases;
+    Object.entries(aliasesByAction).forEach(([name, aliases]) => {
       const clip = aliases.map((alias) => THREE.AnimationClip.findByName(availableAnimations, alias)).find(Boolean);
       if (!clip || !this.mixer) return;
       const action = this.mixer.clipAction(clip);
@@ -519,6 +527,7 @@ class SunlitPatrol {
       this.actions.set(name as ActionName, action);
     });
     this.actions.get("Idle")?.play();
+    if (this.useRokokoRifleRig) this.setStatus("Rokoko rifle rig prototype");
   }
 
   private async loadWeaponAndTargets() {

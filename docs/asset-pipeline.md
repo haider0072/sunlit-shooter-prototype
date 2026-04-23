@@ -18,6 +18,34 @@ public/assets/custom/mixamo/
   animations.glb
 ```
 
+## Local Rokoko Rifle Prototype
+
+This repo also supports an experimental converted Rokoko/Mixamo rifle mocap character:
+
+```txt
+public/assets/custom/mixamo/rifle_light.glb
+```
+
+Run it with:
+
+```txt
+http://localhost:5173/?debug=1&rig=rokoko
+```
+
+This is not the default player yet. It is a reference/prototype rig for testing whether Mixamo-style full-body rifle mocap is worth promoting into the main character controller.
+
+The conversion script is:
+
+```txt
+tools/convert_fbx_to_glb.py
+```
+
+Example:
+
+```txt
+"/Applications/Blender.app/Contents/MacOS/Blender" --background --python tools/convert_fbx_to_glb.py -- --input "public/assets/vendor/rokoko-gun-animations/Guns/Rifle_Light_mixamo.fbx" --output "public/assets/custom/mixamo/rifle_light.glb"
+```
+
 Required animation clips should be named, or easily aliased, to:
 
 ```txt

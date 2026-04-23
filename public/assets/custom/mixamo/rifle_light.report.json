@@ -1,0 +1,226 @@
+{
+  "objects": [
+    {
+      "name": "mixamorig:Reference",
+      "type": "ARMATURE",
+      "children": 15
+    },
+    {
+      "name": "mixamorig:LeftHandIndex4",
+      "type": "EMPTY",
+      "children": 0
+    },
+    {
+      "name": "mixamorig:LeftHandMiddle4",
+      "type": "EMPTY",
+      "children": 0
+    },
+    {
+      "name": "mixamorig:LeftHandPinky4",
+      "type": "EMPTY",
+      "children": 0
+    },
+    {
+      "name": "mixamorig:LeftHandRing4",
+      "type": "EMPTY",
+      "children": 0
+    },
+    {
+      "name": "mixamorig:LeftHandThumb4",
+      "type": "EMPTY",
+      "children": 0
+    },
+    {
+      "name": "mixamorig:HeadTop_End",
+      "type": "EMPTY",
+      "children": 0
+    },
+    {
+      "name": "mixamorig:RightHandIndex4",
+      "type": "EMPTY",
+      "children": 0
+    },
+    {
+      "name": "mixamorig:RightHandMiddle4",
+      "type": "EMPTY",
+      "children": 0
+    },
+    {
+      "name": "mixamorig:RightHandPinky4",
+      "type": "EMPTY",
+      "children": 0
+    },
+    {
+      "name": "mixamorig:RightHandRing4",
+      "type": "EMPTY",
+      "children": 0
+    },
+    {
+      "name": "mixamorig:RightHandThumb4",
+      "type": "EMPTY",
+      "children": 0
+    },
+    {
+      "name": "mixamorig:LeftToe_End",
+      "type": "EMPTY",
+      "children": 0
+    },
+    {
+      "name": "mixamorig:RightToe_End",
+      "type": "EMPTY",
+      "children": 0
+    },
+    {
+      "name": "mixamorig:Body",
+      "type": "MESH",
+      "children": 0
+    },
+    {
+      "name": "mixamorig:HeadFace",
+      "type": "MESH",
+      "children": 0
+    }
+  ],
+  "meshes": [
+    {
+      "name": "mixamorig:Body",
+      "vertices": 300,
+      "polygons": 414,
+      "materials": []
+    },
+    {
+      "name": "mixamorig:HeadFace",
+      "vertices": 6321,
+      "polygons": 12256,
+      "materials": []
+    }
+  ],
+  "armatures": [
+    {
+      "name": "mixamorig:Reference",
+      "bones": 52
+    }
+  ],
+  "actions": [
+    {
+      "name": "Key|clip|Base_Layer",
+      "frame_range": [
+        2.0,
+        1723.9998779296875
+      ],
+      "channels": 0
+    },
+    {
+      "name": "mixamorig:HeadTop_End|clip|Base_Layer",
+      "frame_range": [
+        1.0,
+        1724.0
+      ],
+      "channels": 0
+    },
+    {
+      "name": "mixamorig:LeftHandIndex4|clip|Base_Layer",
+      "frame_range": [
+        1.0,
+        1724.0
+      ],
+      "channels": 0
+    },
+    {
+      "name": "mixamorig:LeftHandMiddle4|clip|Base_Layer",
+      "frame_range": [
+        1.0,
+        1724.0
+      ],
+      "channels": 0
+    },
+    {
+      "name": "mixamorig:LeftHandPinky4|clip|Base_Layer",
+      "frame_range": [
+        1.0,
+        1724.0
+      ],
+      "channels": 0
+    },
+    {
+      "name": "mixamorig:LeftHandRing4|clip|Base_Layer",
+      "frame_range": [
+        1.0,
+        1724.0
+      ],
+      "channels": 0
+    },
+    {
+      "name": "mixamorig:LeftHandThumb4|clip|Base_Layer",
+      "frame_range": [
+        1.0,
+        1724.0
+      ],
+      "channels": 0
+    },
+    {
+      "name": "mixamorig:LeftToe_End|clip|Base_Layer",
+      "frame_range": [
+        1.0,
+        1724.0
+      ],
+      "channels": 0
+    },
+    {
+      "name": "mixamorig:Reference|clip|Base_Layer",
+      "frame_range": [
+        1.0,
+        1724.0
+      ],
+      "channels": 0
+    },
+    {
+      "name": "mixamorig:RightHandIndex4|clip|Base_Layer",
+      "frame_range": [
+        1.0,
+        1724.0
+      ],
+      "channels": 0
+    },
+    {
+      "name": "mixamorig:RightHandMiddle4|clip|Base_Layer",
+      "frame_range": [
+        1.0,
+        1724.0
+      ],
+      "channels": 0
+    },
+    {
+      "name": "mixamorig:RightHandPinky4|clip|Base_Layer",
+      "frame_range": [
+        1.0,
+        1724.0
+      ],
+      "channels": 0
+    },
+    {
+      "name": "mixamorig:RightHandRing4|clip|Base_Layer",
+      "frame_range": [
+        1.0,
+        1724.0
+      ],
+      "channels": 0
+    },
+    {
+      "name": "mixamorig:RightHandThumb4|clip|Base_Layer",
+      "frame_range": [
+        1.0,
+        1724.0
+      ],
+      "channels": 0
+    },
+    {
+      "name": "mixamorig:RightToe_End|clip|Base_Layer",
+      "frame_range": [
+        1.0,
+        1724.0
+      ],
+      "channels": 0
+    }
+  ]
+}

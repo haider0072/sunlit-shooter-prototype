@@ -15,3 +15,6 @@ public/assets/vendor/characters/
 public/assets/vendor/fps-rifle-hands/rifle/*
 !public/assets/vendor/fps-rifle-hands/rifle/rifle.glb
 public/assets/vendor/rokoko-gun-animations/
+public/assets/custom/mixamo/*
+!public/assets/custom/mixamo/rifle_light.glb
+!public/assets/custom/mixamo/rifle_light.report.json

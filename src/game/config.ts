@@ -15,7 +15,8 @@ export type ActionName =
 
 export const runtimeAssets = {
   player: {
-    character: "/assets/characters/Soldier_Male.gltf"
+    character: "/assets/characters/Soldier_Male.gltf",
+    rokokoRiflePrototype: "/assets/custom/mixamo/rifle_light.glb"
   },
   range: {
     blasterFallback: "/assets/blaster/blaster.glb",
@@ -47,6 +48,20 @@ export const actionClipAliases: Record<ActionName, string[]> = {
   GrenadeThrow: ["PickUp", "Throw", "Punch"],
   Hit: ["RecieveHit", "ReceiveHit", "Hit_Front"],
   Death: ["Death", "Defeat"]
+};
+
+export const rokokoRifleActionClipAliases: Record<ActionName, string[]> = {
+  Idle: ["CombatReadyPose"],
+  Run: ["CombatReadyPose"],
+  Sprint: ["CombatReadyPose"],
+  CrouchIdle: ["CombatReadyPose"],
+  CrouchWalk: ["CombatReadyPose"],
+  Shoot_OneHanded: ["mixamorig:Reference|clip|Base_Layer"],
+  Reload: ["mixamorig:Reference|clip|Base_Layer"],
+  Jump: ["mixamorig:Reference|clip|Base_Layer"],
+  GrenadeThrow: ["mixamorig:Reference|clip|Base_Layer"],
+  Hit: ["mixamorig:Reference|clip|Base_Layer"],
+  Death: ["mixamorig:Reference|clip|Base_Layer"]
 };
 
 export const oneShotActions = new Set<ActionName>(["Shoot_OneHanded", "Reload", "Jump", "GrenadeThrow", "Hit", "Death"]);

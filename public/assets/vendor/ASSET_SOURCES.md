@@ -39,4 +39,5 @@ These assets are kept as prototype/vendor assets so they can be replaced without
 - Source: Rokoko "11 Free Gun Animations"
 - URL: https://www.rokoko.com/resources/rokoko-mocap-11-free-gun-animations
 - Status: downloaded locally as a reference source, but not tracked in repo because the raw FBX set is large.
-- Runtime use: source/reference only for now. These are Mixamo-skeleton FBX files, so they need retargeting or a Mixamo-compatible player rig before they can drive the current Quaternius character.
+- Runtime file tracked in repo: `public/assets/custom/mixamo/rifle_light.glb`
+- Runtime use: optional experimental rig at `?rig=rokoko`. These are Mixamo-skeleton FBX files, so they still need retarget cleanup before becoming the default third-person player.
