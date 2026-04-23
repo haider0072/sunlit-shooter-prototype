@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sunlit Patrol</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game"></canvas>
+      <div class="grain" aria-hidden="true"></div>
+      <div class="crosshair" aria-hidden="true">
+        <span></span>
+      </div>
+      <div id="shotBeam" class="shot-beam" aria-hidden="true"></div>
+      <div id="shotFlash" class="shot-flash" aria-hidden="true"></div>
+      <pre id="debugPanel" class="debug-panel" aria-hidden="true"></pre>
+      <header class="hud hud-top">
+        <div class="brand">
+          <strong>Sunlit Patrol</strong>
+          <span id="objective">Range clear</span>
+        </div>
+        <div class="meters">
+          <span id="score">0</span>
+          <span id="ammo">12 / 12</span>
+          <span id="health">100</span>
+        </div>
+      </header>
+      <footer class="hud hud-bottom">
+        <div id="status">Ready</div>
+        <button id="startButton" type="button">Start</button>
+      </footer>
+      <div id="loader" class="loader">
+        <div class="loader-mark"></div>
+        <p>Preparing the range</p>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

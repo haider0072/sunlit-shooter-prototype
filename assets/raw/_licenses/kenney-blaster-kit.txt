@@ -1,0 +1,4 @@
+Kenney Blaster Kit
+Source: https://kenney.nl/assets/blaster-kit
+License: Creative Commons CC0 / Public Domain
+License URL: https://creativecommons.org/publicdomain/zero/1.0/
