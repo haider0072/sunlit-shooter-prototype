@@ -23,6 +23,7 @@ type Target = {
   maxHp: number;
   wobble: number;
   baseY: number;
+  baseScale: number;
   active: boolean;
 };
 
@@ -588,20 +589,20 @@ class SunlitPatrol {
     });
 
     const targetSpawns = [
-      [-6, -24, targetLarge, 3],
-      [6, -16, targetSmall, 2],
-      [-4, 6, targetSmall, 2],
-      [5, 20, targetLarge, 3],
-      [-7, 38, targetSmall, 2],
-      [7, 50, targetLarge, 3]
+      [-6, -24, targetLarge, 3, 1.12],
+      [6, -16, targetSmall, 2, 1.34],
+      [-4, 6, targetSmall, 2, 1.18],
+      [5, 20, targetLarge, 3, 0.96],
+      [-7, 38, targetSmall, 2, 1.42],
+      [7, 50, targetLarge, 3, 1.08]
     ] as const;
 
-    targetSpawns.forEach(([x, z, asset, hp], index) => {
+    targetSpawns.forEach(([x, z, asset, hp, scale], index) => {
       const root = asset.scene.clone(true);
       root.position.set(x, 0, z);
       root.rotation.y = index % 2 ? -0.25 : 0.25;
-      root.scale.setScalar(hp === 3 ? 1.25 : 1);
-      this.placeObjectOnGround(root);
+      root.scale.setScalar(scale);
+      this.placeObjectOnGround(root, 0.34 + index * 0.035);
       const meshes: THREE.Object3D[] = [];
       root.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
@@ -612,7 +613,7 @@ class SunlitPatrol {
           meshes.push(mesh);
         }
       });
-      const target: Target = { root, meshes, hp, maxHp: hp, wobble: index * 0.7, baseY: root.position.y, active: true };
+      const target: Target = { root, meshes, hp, maxHp: hp, wobble: index * 0.7, baseY: root.position.y, baseScale: scale, active: true };
       meshes.forEach((mesh) => this.targetByMesh.set(mesh, target));
       this.targets.push(target);
       this.scene.add(root);
@@ -1028,12 +1029,12 @@ class SunlitPatrol {
     }
 
     if (activeCount === 0 && this.nextTargetWave < 0.02) {
-      this.targets.forEach((target) => {
+      this.targets.forEach((target, index) => {
         target.active = true;
         target.hp = target.maxHp;
         target.root.visible = true;
-        target.root.scale.setScalar(target.maxHp === 3 ? 1.25 : 1);
-        this.placeObjectOnGround(target.root);
+        target.root.scale.setScalar(target.baseScale);
+        this.placeObjectOnGround(target.root, 0.34 + index * 0.035);
         target.baseY = target.root.position.y;
       });
       this.setStatus("New wave");
