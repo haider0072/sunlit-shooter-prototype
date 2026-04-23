@@ -3,19 +3,16 @@ import * as THREE from "three";
 import { GLTF, GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
+import {
+  actionClipAliases,
+  cameraTuning,
+  fallbackWeaponSocket,
+  oneShotActions,
+  runtimeAssets,
+  thirdPersonWeaponSocket,
+  type ActionName
+} from "./game/config";
 
-type ActionName =
-  | "Idle"
-  | "Run"
-  | "Sprint"
-  | "CrouchIdle"
-  | "CrouchWalk"
-  | "Shoot_OneHanded"
-  | "Reload"
-  | "Jump"
-  | "GrenadeThrow"
-  | "Hit"
-  | "Death";
 type CameraMode = "third" | "first";
 
 type Target = {
@@ -467,7 +464,7 @@ class SunlitPatrol {
   }
 
   private async loadPlayer() {
-    const characterGltf = await this.loadGLTF("/assets/characters/Soldier_Male.gltf");
+    const characterGltf = await this.loadGLTF(runtimeAssets.player.character);
     const animationGltf = characterGltf.animations.length > 0 ? characterGltf : await this.loadGLTF("/assets/vendor/animations/ual1-standard.glb");
     const model = characterGltf.scene;
     model.traverse((child) => {
@@ -512,27 +509,13 @@ class SunlitPatrol {
     if (shootSource) {
       availableAnimations.push(createStaticPoseClip("CombatReadyPose", shootSource, 0.42));
     }
-    const actionClips: Record<ActionName, string[]> = {
-      Idle: ["CombatReadyPose", "Pistol_Aim_Neutral", "Pistol_Idle_Loop", "Idle_Loop", "Idle"],
-      Run: ["Run_Carry", "Run", "Jog_Fwd_Loop", "Walk_Loop", "Walk"],
-      Sprint: ["Run", "Sprint_Loop", "Run_Carry"],
-      CrouchIdle: ["CombatReadyPose", "Crouch_Idle_Loop", "Idle"],
-      CrouchWalk: ["Crouch_Fwd_Loop", "Walk_Carry", "Walk", "Run_Carry"],
-      Shoot_OneHanded: ["Shoot_OneHanded", "Pistol_Shoot"],
-      Reload: ["PickUp", "Pistol_Reload"],
-      Jump: ["Jump", "Jump_Start", "Jump_Loop"],
-      GrenadeThrow: ["PickUp", "Throw", "Punch"],
-      Hit: ["RecieveHit", "ReceiveHit", "Hit_Front"],
-      Death: ["Death", "Defeat"]
-    };
-    Object.entries(actionClips).forEach(([name, aliases]) => {
+    Object.entries(actionClipAliases).forEach(([name, aliases]) => {
       const clip = aliases.map((alias) => THREE.AnimationClip.findByName(availableAnimations, alias)).find(Boolean);
       if (!clip || !this.mixer) return;
       const action = this.mixer.clipAction(clip);
       action.enabled = true;
-      const oneShot = name === "Shoot_OneHanded" || name === "Reload" || name === "Jump" || name === "GrenadeThrow" || name === "Hit" || name === "Death";
-      action.clampWhenFinished = oneShot;
-      if (oneShot) action.setLoop(THREE.LoopOnce, 1);
+      action.clampWhenFinished = oneShotActions.has(name as ActionName);
+      if (oneShotActions.has(name as ActionName)) action.setLoop(THREE.LoopOnce, 1);
       this.actions.set(name as ActionName, action);
     });
     this.actions.get("Idle")?.play();
@@ -540,22 +523,22 @@ class SunlitPatrol {
 
   private async loadWeaponAndTargets() {
     const [weaponGltf, bulletGltf, targetLarge, targetSmall, crateMedium, crateWide, grenadeGltf, firstPersonRifle, tacticalRifle] = await Promise.all([
-      this.loadGLTF("/assets/blaster/blaster.glb"),
-      this.loadGLTF("/assets/blaster/bullet-foam.glb"),
-      this.loadGLTF("/assets/blaster/target-large.glb"),
-      this.loadGLTF("/assets/blaster/target-small.glb"),
-      this.loadGLTF("/assets/blaster/crate-medium.glb"),
-      this.loadGLTF("/assets/blaster/crate-wide.glb"),
-      this.loadGLTF("/assets/raw/kenney/blaster-kit/Models/GLB format/grenade-a.glb"),
-      this.loadGLTF("/assets/vendor/fps-rifle-hands/rifle/rifle.glb"),
+      this.loadGLTF(runtimeAssets.range.blasterFallback),
+      this.loadGLTF(runtimeAssets.range.bulletFoam),
+      this.loadGLTF(runtimeAssets.range.targetLarge),
+      this.loadGLTF(runtimeAssets.range.targetSmall),
+      this.loadGLTF(runtimeAssets.range.crateMedium),
+      this.loadGLTF(runtimeAssets.range.crateWide),
+      this.loadGLTF(runtimeAssets.range.grenade),
+      this.loadGLTF(runtimeAssets.firstPerson.rifleHands),
       this.loadOBJWithMtl(
-        "/assets/vendor/animated-guns/FPS Pack/OBJ/Pistol.obj",
-        "/assets/vendor/animated-guns/FPS Pack/OBJ/Pistol.mtl"
+        runtimeAssets.thirdPerson.sidearmObj,
+        runtimeAssets.thirdPerson.sidearmMtl
       )
     ]);
 
     this.weapon = this.prepareThirdPersonWeapon(tacticalRifle, weaponGltf.scene);
-    this.weapon.scale.multiplyScalar(this.rightHandBone ? 0.54 : 0.86);
+    this.weapon.scale.multiplyScalar(this.rightHandBone ? thirdPersonWeaponSocket.scale : fallbackWeaponSocket.scale);
     this.weapon.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
@@ -564,12 +547,12 @@ class SunlitPatrol {
       }
     });
     if (this.rightHandBone) {
-      this.weaponSocket.position.set(0.02, -0.09, -0.05);
-      this.weaponSocket.rotation.set(THREE.MathUtils.degToRad(-8), THREE.MathUtils.degToRad(-92), THREE.MathUtils.degToRad(12));
+      this.weaponSocket.position.copy(thirdPersonWeaponSocket.position);
+      this.weaponSocket.rotation.copy(thirdPersonWeaponSocket.rotation);
       this.rightHandBone.add(this.weaponSocket);
     } else {
-      this.weaponSocket.position.set(-0.42, 0.84, 0.34);
-      this.weaponSocket.rotation.set(0.08, -Math.PI * 0.5, -0.05);
+      this.weaponSocket.position.copy(fallbackWeaponSocket.position);
+      this.weaponSocket.rotation.copy(fallbackWeaponSocket.rotation);
       this.player.add(this.weaponSocket);
     }
     this.weaponSocket.add(this.weapon);
@@ -878,8 +861,8 @@ class SunlitPatrol {
 
   private applyMouseLook(deltaX: number, deltaY: number) {
     this.yaw -= deltaX * 0.0025;
-    const minPitch = this.cameraMode === "third" ? -0.2 : -0.5;
-    const maxPitch = this.cameraMode === "third" ? 0.22 : 0.36;
+    const minPitch = this.cameraMode === "third" ? cameraTuning.thirdPerson.minPitch : cameraTuning.firstPerson.minPitch;
+    const maxPitch = this.cameraMode === "third" ? cameraTuning.thirdPerson.maxPitch : cameraTuning.firstPerson.maxPitch;
     this.pitch = THREE.MathUtils.clamp(this.pitch - deltaY * 0.0017, minPitch, maxPitch);
   }
 
@@ -981,29 +964,29 @@ class SunlitPatrol {
     const forward = this.getAimDirection(this.cameraRecoilPitch, this.cameraRecoilYaw);
     const stanceDrop = this.crouchBlend * 0.28;
     if (this.cameraMode === "first") {
-      const desired = this.tmpVec.copy(this.player.position).add(new THREE.Vector3(0, 1.48 - stanceDrop, 0));
+      const desired = this.tmpVec.copy(this.player.position).add(new THREE.Vector3(0, cameraTuning.firstPerson.eyeHeight - stanceDrop, 0));
       this.camera.position.lerp(desired, 1 - Math.pow(0.000001, dt));
       this.camera.lookAt(
         this.camera.position.x + forward.x * 10,
         this.camera.position.y + forward.y * 10,
         this.camera.position.z + forward.z * 10
       );
-      const targetFov = this.isAimingDownSights ? 43 : 58;
+      const targetFov = this.isAimingDownSights ? cameraTuning.firstPerson.adsFov : cameraTuning.firstPerson.hipFov;
       this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 10, dt);
       this.camera.updateProjectionMatrix();
       return;
     }
 
-    this.cameraTarget.copy(this.player.position).add(new THREE.Vector3(0, 1.38 - stanceDrop, 0));
-    const distance = 6.35;
-    const height = 2.35;
+    this.cameraTarget.copy(this.player.position).add(new THREE.Vector3(0, cameraTuning.thirdPerson.targetHeight - stanceDrop, 0));
+    const distance = cameraTuning.thirdPerson.distance;
+    const height = cameraTuning.thirdPerson.height;
     const flatForward = this.tmpVec2.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)).normalize();
     const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
     const desired = this.tmpVec.set(
       this.cameraTarget.x - flatForward.x * distance,
       this.cameraTarget.y + height,
       this.cameraTarget.z - flatForward.z * distance
-    ).addScaledVector(right, 0.82);
+    ).addScaledVector(right, cameraTuning.thirdPerson.shoulderOffset);
     this.camera.position.lerp(desired, 1 - Math.pow(0.00002, dt));
     this.camera.lookAt(this.camera.position.clone().addScaledVector(forward, 10));
     this.camera.fov = THREE.MathUtils.damp(this.camera.fov, 48, 8, dt);
@@ -2302,7 +2285,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
   private toggleCameraMode() {
     this.cameraMode = this.cameraMode === "third" ? "first" : "third";
     if (this.cameraMode === "third") {
-      this.pitch = THREE.MathUtils.clamp(this.pitch, -0.2, 0.22);
+      this.pitch = THREE.MathUtils.clamp(this.pitch, cameraTuning.thirdPerson.minPitch, cameraTuning.thirdPerson.maxPitch);
     }
     this.player.visible = this.cameraMode === "third";
     if (this.firstPersonRig) this.firstPersonRig.visible = this.cameraMode === "first";

@@ -3,3 +3,15 @@ dist/
 .DS_Store
 *.log
 .vercel
+
+# Local source/reference asset dumps. Keep runtime assets tracked explicitly.
+public/assets/vendor/animated-guns/FPS Pack/Blends/
+public/assets/vendor/animated-guns/FPS Pack/FBX/
+public/assets/vendor/animated-guns/FPS Pack/OBJ/*
+!public/assets/vendor/animated-guns/FPS Pack/OBJ/Pistol.obj
+!public/assets/vendor/animated-guns/FPS Pack/OBJ/Pistol.mtl
+public/assets/vendor/animations/
+public/assets/vendor/characters/
+public/assets/vendor/fps-rifle-hands/rifle/*
+!public/assets/vendor/fps-rifle-hands/rifle/rifle.glb
+public/assets/vendor/rokoko-gun-animations/
