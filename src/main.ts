@@ -1,8 +1,22 @@
 import "./style.css";
 import * as THREE from "three";
 import { GLTF, GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { MTLLoader } from "three/examples/jsm/loaders/MTLLoader.js";
+import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 
-type ActionName = "Idle" | "Run" | "Shoot_OneHanded";
+type ActionName =
+  | "Idle"
+  | "Run"
+  | "Sprint"
+  | "CrouchIdle"
+  | "CrouchWalk"
+  | "Shoot_OneHanded"
+  | "Reload"
+  | "Jump"
+  | "GrenadeThrow"
+  | "Hit"
+  | "Death";
+type CameraMode = "third" | "first";
 
 type Target = {
   root: THREE.Group;
@@ -20,6 +34,15 @@ type Projectile = {
   life: number;
   distance: number;
   maxDistance: number;
+};
+
+type Grenade = {
+  root: THREE.Group;
+  velocity: THREE.Vector3;
+  life: number;
+  fuse: number;
+  bounces: number;
+  exploded: boolean;
 };
 
 type AimTrace = {
@@ -115,6 +138,43 @@ function rounded(value: number, digits = 3) {
   return Number(value.toFixed(digits));
 }
 
+function sampleTrack(track: THREE.KeyframeTrack, time: number) {
+  const valueSize = track.getValueSize();
+  const times = track.times;
+  const values = track.values;
+  if (times.length === 0) return new Array(valueSize).fill(0);
+  let index = 0;
+  while (index < times.length - 1 && times[index + 1] < time) index += 1;
+  const nextIndex = Math.min(index + 1, times.length - 1);
+  const startTime = times[index];
+  const endTime = times[nextIndex];
+  const alpha = endTime === startTime ? 0 : THREE.MathUtils.clamp((time - startTime) / (endTime - startTime), 0, 1);
+  const startOffset = index * valueSize;
+  const endOffset = nextIndex * valueSize;
+  if (track instanceof THREE.QuaternionKeyframeTrack && valueSize === 4) {
+    const start = new THREE.Quaternion(values[startOffset], values[startOffset + 1], values[startOffset + 2], values[startOffset + 3]);
+    const end = new THREE.Quaternion(values[endOffset], values[endOffset + 1], values[endOffset + 2], values[endOffset + 3]);
+    start.slerp(end, alpha);
+    return [start.x, start.y, start.z, start.w];
+  }
+  return Array.from({ length: valueSize }, (_, valueIndex) => THREE.MathUtils.lerp(values[startOffset + valueIndex], values[endOffset + valueIndex], alpha));
+}
+
+function createStaticPoseClip(name: string, source: THREE.AnimationClip, normalizedTime: number) {
+  const poseTime = THREE.MathUtils.clamp(normalizedTime, 0, 1) * source.duration;
+  const tracks = source.tracks.map((track) => {
+    const poseValues = sampleTrack(track, poseTime);
+    const values = [...poseValues, ...poseValues];
+    if (track instanceof THREE.QuaternionKeyframeTrack) return new THREE.QuaternionKeyframeTrack(track.name, [0, 1], values);
+    if (track instanceof THREE.VectorKeyframeTrack) return new THREE.VectorKeyframeTrack(track.name, [0, 1], values);
+    if (track instanceof THREE.ColorKeyframeTrack) return new THREE.ColorKeyframeTrack(track.name, [0, 1], values);
+    if (track instanceof THREE.BooleanKeyframeTrack) return new THREE.BooleanKeyframeTrack(track.name, [0, 1], values);
+    if (track instanceof THREE.StringKeyframeTrack) return new THREE.StringKeyframeTrack(track.name, [0, 1], values);
+    return new THREE.NumberKeyframeTrack(track.name, [0, 1], values);
+  });
+  return new THREE.AnimationClip(name, 1, tracks);
+}
+
 class SunlitPatrol {
   private readonly renderer = new THREE.WebGLRenderer({
     canvas,
@@ -126,12 +186,15 @@ class SunlitPatrol {
   private readonly camera = new THREE.PerspectiveCamera(48, 1, 0.1, 220);
   private readonly clock = new THREE.Clock();
   private readonly gltfLoader = new GLTFLoader();
+  private readonly mtlLoader = new MTLLoader();
+  private readonly objLoader = new OBJLoader();
   private readonly raycaster = new THREE.Raycaster();
   private readonly groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.08);
   private readonly keys = new Set<string>();
   private readonly targetByMesh = new Map<THREE.Object3D, Target>();
   private readonly targets: Target[] = [];
   private readonly projectiles: Projectile[] = [];
+  private readonly grenades: Grenade[] = [];
   private readonly effects: THREE.Object3D[] = [];
   private readonly tmpVec = new THREE.Vector3();
   private readonly tmpVec2 = new THREE.Vector3();
@@ -144,15 +207,21 @@ class SunlitPatrol {
   private readonly playerVelocity = new THREE.Vector3();
 
   private mixer: THREE.AnimationMixer | null = null;
+  private firstPersonMixer: THREE.AnimationMixer | null = null;
+  private firstPersonFireAction: THREE.AnimationAction | null = null;
   private actions = new Map<ActionName, THREE.AnimationAction>();
   private activeAction: ActionName = "Idle";
   private weapon: THREE.Group | null = null;
+  private firstPersonRig: THREE.Group | null = null;
   private bulletTemplate: THREE.Group | null = null;
+  private grenadeTemplate: THREE.Group | null = null;
   private rightHandBone: THREE.Object3D | null = null;
   private isReady = false;
   private isPointerLocked = false;
   private mouseAimActive = false;
   private isFiring = false;
+  private isAimingDownSights = false;
+  private jumpAnimTimer = 0;
   private yaw = 0;
   private pitch = -0.08;
   private score = 0;
@@ -166,6 +235,10 @@ class SunlitPatrol {
   private cameraRecoilYaw = 0;
   private weaponKick = 0;
   private weaponKickSide = 0;
+  private reloadAnimTimer = 0;
+  private grenadeCooldown = 0;
+  private grenadeAmmo = 3;
+  private crouchBlend = 0;
   private debugEnabled = new URLSearchParams(window.location.search).has("debug");
   private shotSequence = 0;
   private frameSequence = 0;
@@ -174,6 +247,7 @@ class SunlitPatrol {
   private debugEvents: string[] = [];
   private debugShotRecords: unknown[] = [];
   private lastMouseDelta = { x: 0, y: 0, time: 0 };
+  private cameraMode: CameraMode = "third";
 
   constructor() {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -393,8 +467,9 @@ class SunlitPatrol {
   }
 
   private async loadPlayer() {
-    const gltf = await this.loadGLTF("/assets/characters/Soldier_Male.gltf");
-    const model = gltf.scene;
+    const characterGltf = await this.loadGLTF("/assets/characters/Soldier_Male.gltf");
+    const animationGltf = characterGltf.animations.length > 0 ? characterGltf : await this.loadGLTF("/assets/vendor/animations/ual1-standard.glb");
+    const model = characterGltf.scene;
     model.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
@@ -407,13 +482,15 @@ class SunlitPatrol {
           this.tuneMaterial(material);
         }
       }
-      if (child.name === "Fist.R" || child.name === "FistR") {
+      if (child.name === "Fist.R" || child.name === "FistR" || child.name === "hand_r" || child.name === "RightHand" || child.name === "mixamorigRightHand") {
         this.rightHandBone = child;
       }
       if ((child as THREE.SkinnedMesh).isSkinnedMesh) {
         const skinned = child as THREE.SkinnedMesh;
         this.rightHandBone =
-          skinned.skeleton.bones.find((bone) => bone.name === "Fist.R" || bone.name === "FistR") ?? this.rightHandBone;
+          skinned.skeleton.bones.find((bone) =>
+            ["Fist.R", "FistR", "hand_r", "RightHand", "mixamorigRightHand"].includes(bone.name)
+          ) ?? this.rightHandBone;
       }
     });
 
@@ -430,33 +507,55 @@ class SunlitPatrol {
     this.player.position.set(0, 0, -50);
 
     this.mixer = new THREE.AnimationMixer(model);
-    const names: ActionName[] = ["Idle", "Run", "Shoot_OneHanded"];
-    names.forEach((name) => {
-      const clip = THREE.AnimationClip.findByName(gltf.animations, name);
+    const availableAnimations = [...animationGltf.animations];
+    const shootSource = THREE.AnimationClip.findByName(availableAnimations, "Shoot_OneHanded") ?? THREE.AnimationClip.findByName(availableAnimations, "Pistol_Aim_Neutral");
+    if (shootSource) {
+      availableAnimations.push(createStaticPoseClip("CombatReadyPose", shootSource, 0.42));
+    }
+    const actionClips: Record<ActionName, string[]> = {
+      Idle: ["CombatReadyPose", "Pistol_Aim_Neutral", "Pistol_Idle_Loop", "Idle_Loop", "Idle"],
+      Run: ["Run_Carry", "Run", "Jog_Fwd_Loop", "Walk_Loop", "Walk"],
+      Sprint: ["Run", "Sprint_Loop", "Run_Carry"],
+      CrouchIdle: ["CombatReadyPose", "Crouch_Idle_Loop", "Idle"],
+      CrouchWalk: ["Crouch_Fwd_Loop", "Walk_Carry", "Walk", "Run_Carry"],
+      Shoot_OneHanded: ["Shoot_OneHanded", "Pistol_Shoot"],
+      Reload: ["PickUp", "Pistol_Reload"],
+      Jump: ["Jump", "Jump_Start", "Jump_Loop"],
+      GrenadeThrow: ["PickUp", "Throw", "Punch"],
+      Hit: ["RecieveHit", "ReceiveHit", "Hit_Front"],
+      Death: ["Death", "Defeat"]
+    };
+    Object.entries(actionClips).forEach(([name, aliases]) => {
+      const clip = aliases.map((alias) => THREE.AnimationClip.findByName(availableAnimations, alias)).find(Boolean);
       if (!clip || !this.mixer) return;
       const action = this.mixer.clipAction(clip);
       action.enabled = true;
-      action.clampWhenFinished = name === "Shoot_OneHanded";
-      if (name === "Shoot_OneHanded") action.setLoop(THREE.LoopOnce, 1);
-      this.actions.set(name, action);
+      const oneShot = name === "Shoot_OneHanded" || name === "Reload" || name === "Jump" || name === "GrenadeThrow" || name === "Hit" || name === "Death";
+      action.clampWhenFinished = oneShot;
+      if (oneShot) action.setLoop(THREE.LoopOnce, 1);
+      this.actions.set(name as ActionName, action);
     });
     this.actions.get("Idle")?.play();
   }
 
   private async loadWeaponAndTargets() {
-    const [weaponGltf, bulletGltf, targetLarge, targetSmall, crateMedium, crateWide] = await Promise.all([
+    const [weaponGltf, bulletGltf, targetLarge, targetSmall, crateMedium, crateWide, grenadeGltf, firstPersonRifle, tacticalRifle] = await Promise.all([
       this.loadGLTF("/assets/blaster/blaster.glb"),
       this.loadGLTF("/assets/blaster/bullet-foam.glb"),
       this.loadGLTF("/assets/blaster/target-large.glb"),
       this.loadGLTF("/assets/blaster/target-small.glb"),
       this.loadGLTF("/assets/blaster/crate-medium.glb"),
-      this.loadGLTF("/assets/blaster/crate-wide.glb")
+      this.loadGLTF("/assets/blaster/crate-wide.glb"),
+      this.loadGLTF("/assets/raw/kenney/blaster-kit/Models/GLB format/grenade-a.glb"),
+      this.loadGLTF("/assets/vendor/fps-rifle-hands/rifle/rifle.glb"),
+      this.loadOBJWithMtl(
+        "/assets/vendor/animated-guns/FPS Pack/OBJ/Pistol.obj",
+        "/assets/vendor/animated-guns/FPS Pack/OBJ/Pistol.mtl"
+      )
     ]);
 
-    this.weapon = weaponGltf.scene;
-    this.weapon.scale.setScalar(this.rightHandBone ? 0.48 : 0.52);
-    this.weapon.position.set(0, 0, 0);
-    this.weapon.rotation.set(0, 0, 0);
+    this.weapon = this.prepareThirdPersonWeapon(tacticalRifle, weaponGltf.scene);
+    this.weapon.scale.multiplyScalar(this.rightHandBone ? 0.54 : 0.86);
     this.weapon.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
@@ -465,8 +564,8 @@ class SunlitPatrol {
       }
     });
     if (this.rightHandBone) {
-      this.weaponSocket.position.set(0.08, -0.36, -0.08);
-      this.weaponSocket.rotation.set(-0.08, -Math.PI * 0.5, 0.12);
+      this.weaponSocket.position.set(0.02, -0.09, -0.05);
+      this.weaponSocket.rotation.set(THREE.MathUtils.degToRad(-8), THREE.MathUtils.degToRad(-92), THREE.MathUtils.degToRad(12));
       this.rightHandBone.add(this.weaponSocket);
     } else {
       this.weaponSocket.position.set(-0.42, 0.84, 0.34);
@@ -474,12 +573,23 @@ class SunlitPatrol {
       this.player.add(this.weaponSocket);
     }
     this.weaponSocket.add(this.weapon);
+    this.setupFirstPersonRig(firstPersonRifle);
 
     this.bulletTemplate = bulletGltf.scene;
     this.bulletTemplate.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
         mesh.castShadow = false;
+        this.tuneMaterial(mesh.material);
+      }
+    });
+
+    this.grenadeTemplate = grenadeGltf.scene;
+    this.grenadeTemplate.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
         this.tuneMaterial(mesh.material);
       }
     });
@@ -548,10 +658,92 @@ class SunlitPatrol {
     }
   }
 
+  private setupFirstPersonRig(gltf: GLTF) {
+    this.firstPersonRig = gltf.scene;
+    this.firstPersonRig.name = "FirstPersonRifleHands";
+    this.firstPersonRig.position.set(0.72, -0.95, -2.2);
+    this.firstPersonRig.rotation.set(THREE.MathUtils.degToRad(1), THREE.MathUtils.degToRad(-6), THREE.MathUtils.degToRad(0));
+    this.firstPersonRig.scale.setScalar(0.1);
+    this.firstPersonRig.visible = false;
+    this.firstPersonRig.traverse((child) => {
+      if (!(child as THREE.Mesh).isMesh) return;
+      const mesh = child as THREE.Mesh;
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.frustumCulled = false;
+      this.tuneMaterial(mesh.material);
+    });
+    this.camera.add(this.firstPersonRig);
+    this.scene.add(this.camera);
+
+    if (gltf.animations.length > 0) {
+      this.firstPersonMixer = new THREE.AnimationMixer(this.firstPersonRig);
+      const fireClip = THREE.AnimationClip.findByName(gltf.animations, "fire") ?? gltf.animations[0];
+      this.firstPersonFireAction = this.firstPersonMixer.clipAction(fireClip);
+      this.firstPersonFireAction.setLoop(THREE.LoopOnce, 1);
+      this.firstPersonFireAction.clampWhenFinished = false;
+    }
+  }
+
+  private prepareThirdPersonWeapon(primary: THREE.Group | null, fallback: THREE.Group) {
+    const weapon = (primary ?? fallback).clone(true);
+    weapon.name = primary ? "QuaterniusRifle" : "FallbackBlaster";
+    const bounds = new THREE.Box3().setFromObject(weapon);
+    const size = bounds.getSize(new THREE.Vector3());
+    const center = bounds.getCenter(new THREE.Vector3());
+    const maxSide = Math.max(size.x, size.y, size.z, 0.001);
+    weapon.position.sub(center);
+    weapon.scale.setScalar(1 / maxSide);
+    weapon.rotation.set(0, 0, 0);
+    weapon.traverse((child) => {
+      if (!(child as THREE.Mesh).isMesh) return;
+      const mesh = child as THREE.Mesh;
+      mesh.castShadow = true;
+      this.applyWeaponMaterialPalette(mesh);
+      this.tuneMaterial(mesh.material);
+    });
+    return weapon;
+  }
+
+  private applyWeaponMaterialPalette(mesh: THREE.Mesh) {
+    const apply = (material: THREE.Material) => {
+      if (!("color" in material)) return;
+      const named = material as THREE.MeshStandardMaterial | THREE.MeshLambertMaterial | THREE.MeshPhongMaterial;
+      const materialName = material.name.toLowerCase();
+      if (materialName.includes("wood")) named.color.set(materialName.includes("dark") ? "#5f4030" : "#8e6b4d");
+      else if (materialName.includes("metal") || materialName.includes("barrel")) named.color.set("#687076");
+      else if (materialName.includes("black") || materialName.includes("trigger")) named.color.set("#182025");
+      else if (materialName.includes("bullet")) named.color.set("#d9a646");
+      else named.color.set("#3f6f55");
+    };
+    const material = mesh.material;
+    if (Array.isArray(material)) material.forEach(apply);
+    else apply(material);
+  }
+
   private loadGLTF(path: string): Promise<GLTF> {
     return new Promise((resolve, reject) => {
       this.gltfLoader.load(path, resolve, undefined, reject);
     });
+  }
+
+  private async loadOBJWithMtl(objPath: string, mtlPath: string): Promise<THREE.Group | null> {
+    try {
+      const basePath = mtlPath.slice(0, mtlPath.lastIndexOf("/") + 1);
+      const mtlFile = mtlPath.slice(mtlPath.lastIndexOf("/") + 1);
+      this.mtlLoader.setPath(basePath);
+      const materials = await new Promise<MTLLoader.MaterialCreator>((resolve, reject) => {
+        this.mtlLoader.load(mtlFile, resolve, undefined, reject);
+      });
+      materials.preload();
+      this.objLoader.setMaterials(materials);
+      return await new Promise<THREE.Group>((resolve, reject) => {
+        this.objLoader.load(objPath, resolve, undefined, reject);
+      });
+    } catch (error) {
+      console.warn("Falling back to bundled blaster; OBJ weapon failed to load.", error);
+      return null;
+    }
   }
 
   private bindEvents() {
@@ -562,13 +754,17 @@ class SunlitPatrol {
       this.keys.add(event.code);
       if (!event.repeat) this.logDebugEvent("key-down", { code: event.code, keys: this.describeKeys() });
       if (event.code === "KeyR") this.reload();
+      if (event.code === "KeyG" && !event.repeat) this.throwGrenade();
       if (event.code === "F3") {
         event.preventDefault();
         this.setDebugEnabled(!this.debugEnabled);
       }
+      if (event.code === "KeyV" && !event.repeat) {
+        this.toggleCameraMode();
+      }
       if (event.code === "Space") {
         event.preventDefault();
-        this.shoot();
+        this.jump();
       }
     });
     window.addEventListener("keyup", (event) => {
@@ -611,14 +807,31 @@ class SunlitPatrol {
       this.shoot();
     });
     window.addEventListener("mouseup", (event) => {
-      if (event.button !== 0) return;
+      if (event.button === 0) this.isFiring = false;
+      if (event.button === 2) this.isAimingDownSights = false;
+    });
+    canvas.addEventListener("pointerup", (event) => {
+      if (event.button === 0) this.isFiring = false;
+      if (event.button === 2) this.isAimingDownSights = false;
+    });
+    canvas.addEventListener("pointercancel", () => {
       this.isFiring = false;
+      this.isAimingDownSights = false;
     });
     window.addEventListener("mouseleave", () => {
       this.isFiring = false;
+      this.isAimingDownSights = false;
     });
 
     canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+    canvas.addEventListener("pointerdown", (event) => {
+      if (event.button !== 2 || !this.isReady) return;
+      event.preventDefault();
+      this.mouseAimActive = true;
+      this.isAimingDownSights = true;
+      if (!this.isPointerLocked) this.requestPointerLock();
+      this.logDebugEvent("ads-start", { pointerLocked: this.isPointerLocked, cameraMode: this.cameraMode });
+    });
 
     startButton.addEventListener("click", () => {
       if (!this.isReady) return;
@@ -631,12 +844,14 @@ class SunlitPatrol {
     window.addEventListener("blur", () => {
       this.keys.clear();
       this.isFiring = false;
+      this.isAimingDownSights = false;
       this.logDebugEvent("window-blur", { keys: this.describeKeys() });
     });
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) {
         this.keys.clear();
         this.isFiring = false;
+        this.isAimingDownSights = false;
         this.logDebugEvent("document-hidden", { keys: this.describeKeys() });
       }
     });
@@ -663,7 +878,9 @@ class SunlitPatrol {
 
   private applyMouseLook(deltaX: number, deltaY: number) {
     this.yaw -= deltaX * 0.0025;
-    this.pitch = THREE.MathUtils.clamp(this.pitch - deltaY * 0.0017, -0.48, 0.34);
+    const minPitch = this.cameraMode === "third" ? -0.2 : -0.5;
+    const maxPitch = this.cameraMode === "third" ? 0.22 : 0.36;
+    this.pitch = THREE.MathUtils.clamp(this.pitch - deltaY * 0.0017, minPitch, maxPitch);
   }
 
   private update() {
@@ -672,6 +889,9 @@ class SunlitPatrol {
     this.debugLiveTimer += dt;
     this.shotCooldown = Math.max(0, this.shotCooldown - dt);
     this.reloadTimer = Math.max(0, this.reloadTimer - dt);
+    this.reloadAnimTimer = Math.max(0, this.reloadAnimTimer - dt);
+    this.jumpAnimTimer = Math.max(0, this.jumpAnimTimer - dt);
+    this.grenadeCooldown = Math.max(0, this.grenadeCooldown - dt);
     this.nextTargetWave = Math.max(0, this.nextTargetWave - dt);
     this.impactPulse = Math.max(0, this.impactPulse - dt * 4);
     this.cameraRecoilPitch = THREE.MathUtils.damp(this.cameraRecoilPitch, 0, 13, dt);
@@ -685,8 +905,10 @@ class SunlitPatrol {
     this.updateCamera(dt);
     this.updateTargets(dt);
     this.updateProjectiles(dt);
+    this.updateGrenades(dt);
     this.updateEffects(dt);
     this.mixer?.update(dt);
+    this.firstPersonMixer?.update(dt);
     this.renderer.render(this.scene, this.camera);
     if (this.debugEnabled && this.debugLiveTimer >= 0.25) {
       this.debugLiveTimer = 0;
@@ -703,7 +925,9 @@ class SunlitPatrol {
       const cos = Math.cos(this.yaw);
       this.tmpVec.set(sin * forward - cos * strafe, 0, cos * forward + sin * strafe).normalize();
       const movingBackward = forward < 0 && strafe === 0;
-      this.playerVelocity.copy(this.tmpVec).multiplyScalar(movingBackward ? 4.6 : 7.4);
+      const crouching = this.keys.has("KeyC") || this.keys.has("ControlLeft") || this.keys.has("ControlRight");
+      const sprinting = !crouching && this.keys.has("ShiftLeft") && forward > 0;
+      this.playerVelocity.copy(this.tmpVec).multiplyScalar(crouching ? 2.7 : sprinting ? 9.2 : movingBackward ? 4.6 : 7.4);
     } else {
       this.playerVelocity.multiplyScalar(Math.pow(0.002, dt));
       if (this.playerVelocity.lengthSq() < 0.0001) this.playerVelocity.setScalar(0);
@@ -715,7 +939,12 @@ class SunlitPatrol {
     this.player.rotation.y = lerpAngle(this.player.rotation.y, this.yaw, 1 - Math.pow(0.001, dt));
 
     const moving = this.playerVelocity.lengthSq() > 0.4;
-    this.fadeTo(moving ? "Run" : "Idle");
+    const crouching = this.keys.has("KeyC") || this.keys.has("ControlLeft") || this.keys.has("ControlRight");
+    const sprinting = !crouching && this.keys.has("ShiftLeft") && this.keys.has("KeyW");
+    this.crouchBlend = THREE.MathUtils.damp(this.crouchBlend, crouching ? 1 : 0, 12, dt);
+    this.player.scale.set(1, THREE.MathUtils.lerp(1, 0.82, this.crouchBlend), 1);
+    if (this.jumpAnimTimer > 0) return;
+    this.fadeTo(crouching ? (moving ? "CrouchWalk" : "CrouchIdle") : sprinting && moving ? "Sprint" : moving ? "Run" : "Idle");
   }
 
   private updateWeaponPose(dt: number) {
@@ -723,28 +952,62 @@ class SunlitPatrol {
     const sway = Math.sin(performance.now() * 0.006) * (this.playerVelocity.lengthSq() > 0.4 ? 0.018 : 0.006);
     this.weapon.position.set(-this.weaponKick * 0.08, -0.006 + Math.abs(sway) * 0.28, this.weaponKickSide * 0.05 + sway);
     this.weapon.rotation.set(-this.weaponKick * 0.12, this.weaponKickSide * 0.045, sway * 0.65);
+    if (this.firstPersonRig) {
+      const moveSway = this.playerVelocity.lengthSq() > 0.4 ? 0.018 : 0.006;
+      const fpSwayX = Math.sin(performance.now() * 0.004) * moveSway;
+      const fpSwayY = Math.cos(performance.now() * 0.005) * moveSway;
+      const ads = this.cameraMode === "first" && this.isAimingDownSights ? 1 : 0;
+      const reloadT = this.reloadAnimTimer > 0 ? 1 - Math.abs(this.reloadAnimTimer / 0.8 - 0.5) * 2 : 0;
+      const baseX = THREE.MathUtils.lerp(0.72, 0.05, ads);
+      const baseY = THREE.MathUtils.lerp(-0.95, -0.66, ads);
+      const baseZ = THREE.MathUtils.lerp(-2.2, -1.58, ads);
+      this.firstPersonRig.position.set(
+        baseX + this.weaponKickSide * 0.03 + fpSwayX * (1 - ads * 0.7) + reloadT * 0.18,
+        baseY - this.weaponKick * 0.03 + Math.abs(fpSwayY) - reloadT * 0.28,
+        baseZ + this.weaponKick * 0.045 + reloadT * 0.22
+      );
+      this.firstPersonRig.rotation.set(
+        THREE.MathUtils.degToRad(1 - reloadT * 16) - this.weaponKick * 0.03,
+        THREE.MathUtils.degToRad(THREE.MathUtils.lerp(-5, -1, ads)) + this.weaponKickSide * 0.035,
+        fpSwayX * 1.2 + reloadT * 0.18
+      );
+    }
     if (dt > 0.045 && this.debugEnabled) {
       this.logDebugEvent("long-frame", { dt: rounded(dt, 4), effects: this.effects.length, projectiles: this.projectiles.length });
     }
   }
 
   private updateCamera(dt: number) {
-    this.cameraTarget.copy(this.player.position).add(new THREE.Vector3(0, 1.35, 0));
-    const distance = 7.6;
-    const height = 2.75;
     const forward = this.getAimDirection(this.cameraRecoilPitch, this.cameraRecoilYaw);
+    const stanceDrop = this.crouchBlend * 0.28;
+    if (this.cameraMode === "first") {
+      const desired = this.tmpVec.copy(this.player.position).add(new THREE.Vector3(0, 1.48 - stanceDrop, 0));
+      this.camera.position.lerp(desired, 1 - Math.pow(0.000001, dt));
+      this.camera.lookAt(
+        this.camera.position.x + forward.x * 10,
+        this.camera.position.y + forward.y * 10,
+        this.camera.position.z + forward.z * 10
+      );
+      const targetFov = this.isAimingDownSights ? 43 : 58;
+      this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 10, dt);
+      this.camera.updateProjectionMatrix();
+      return;
+    }
+
+    this.cameraTarget.copy(this.player.position).add(new THREE.Vector3(0, 1.38 - stanceDrop, 0));
+    const distance = 6.35;
+    const height = 2.35;
     const flatForward = this.tmpVec2.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)).normalize();
+    const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
     const desired = this.tmpVec.set(
       this.cameraTarget.x - flatForward.x * distance,
       this.cameraTarget.y + height,
       this.cameraTarget.z - flatForward.z * distance
-    );
+    ).addScaledVector(right, 0.82);
     this.camera.position.lerp(desired, 1 - Math.pow(0.00002, dt));
-    this.camera.lookAt(
-      this.cameraTarget.x + forward.x * 9,
-      this.cameraTarget.y + forward.y * 9 + 0.35,
-      this.cameraTarget.z + forward.z * 9
-    );
+    this.camera.lookAt(this.camera.position.clone().addScaledVector(forward, 10));
+    this.camera.fov = THREE.MathUtils.damp(this.camera.fov, 48, 8, dt);
+    this.camera.updateProjectionMatrix();
   }
 
   private updateTargets(dt: number) {
@@ -850,6 +1113,129 @@ class SunlitPatrol {
     }
   }
 
+  private updateGrenades(dt: number) {
+    const gravity = new THREE.Vector3(0, -13.5, 0);
+    for (let i = this.grenades.length - 1; i >= 0; i -= 1) {
+      const grenade = this.grenades[i];
+      grenade.life -= dt;
+      grenade.fuse -= dt;
+      grenade.velocity.addScaledVector(gravity, dt);
+      grenade.root.position.addScaledVector(grenade.velocity, dt);
+      grenade.root.rotation.x += dt * 9.5;
+      grenade.root.rotation.z += dt * 6.2;
+
+      if (grenade.root.position.y <= 0.16) {
+        grenade.root.position.y = 0.16;
+        if (grenade.velocity.y < 0) {
+          grenade.velocity.y *= -0.34;
+          grenade.velocity.x *= 0.72;
+          grenade.velocity.z *= 0.72;
+          grenade.bounces += 1;
+          this.spawnGroundDust(grenade.root.position);
+          this.logDebugEvent("grenade-bounce", {
+            bounces: grenade.bounces,
+            position: this.describeVector(grenade.root.position),
+            velocity: this.describeVector(grenade.velocity)
+          });
+        }
+      }
+
+      if (!grenade.exploded && (grenade.fuse <= 0 || grenade.life <= 0)) {
+        grenade.exploded = true;
+        this.explodeGrenade(grenade.root.position.clone());
+      }
+
+      if (grenade.exploded || grenade.life <= -0.15) {
+        this.scene.remove(grenade.root);
+        grenade.root.traverse((child) => {
+          if (!(child as THREE.Mesh).isMesh || !child.userData.transientGrenade) return;
+          const mesh = child as THREE.Mesh;
+          mesh.geometry.dispose();
+          const material = mesh.material;
+          if (Array.isArray(material)) material.forEach((m) => m.dispose());
+          else material.dispose();
+        });
+        this.grenades.splice(i, 1);
+      }
+    }
+  }
+
+  private throwGrenade() {
+    if (this.reloadTimer > 0 || this.grenadeCooldown > 0 || this.grenadeAmmo <= 0 || !this.grenadeTemplate) return;
+    this.grenadeAmmo -= 1;
+    this.grenadeCooldown = 0.85;
+    this.fadeTo("GrenadeThrow", true);
+    this.isFiring = false;
+
+    const aim = this.getAimDirection(0.035, 0);
+    const forward = new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw)).normalize();
+    const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
+    const start = this.player.position
+      .clone()
+      .add(new THREE.Vector3(0, 1.12 - this.crouchBlend * 0.2, 0))
+      .addScaledVector(right, 0.38)
+      .addScaledVector(forward, 0.56);
+
+    const root = new THREE.Group();
+    root.position.copy(start);
+    const model = this.grenadeTemplate.clone(true);
+    const bounds = new THREE.Box3().setFromObject(model);
+    const size = bounds.getSize(new THREE.Vector3());
+    const center = bounds.getCenter(new THREE.Vector3());
+    const maxSide = Math.max(size.x, size.y, size.z, 0.001);
+    model.position.sub(center);
+    model.scale.setScalar(0.22 / maxSide);
+    model.traverse((child) => {
+      if (!(child as THREE.Mesh).isMesh) return;
+      const mesh = child as THREE.Mesh;
+      mesh.geometry = mesh.geometry.clone();
+      mesh.material = Array.isArray(mesh.material) ? mesh.material.map((mat) => mat.clone()) : mesh.material.clone();
+      mesh.userData.transientGrenade = true;
+    });
+    root.add(model);
+
+    const velocity = aim.multiplyScalar(14.2).add(new THREE.Vector3(0, 3.4, 0));
+    this.grenades.push({ root, velocity, life: 3.2, fuse: 1.45, bounces: 0, exploded: false });
+    this.scene.add(root);
+    this.setStatus(`Grenade out (${this.grenadeAmmo} left)`);
+    this.logDebugEvent("grenade-throw", {
+      start: this.describeVector(start),
+      velocity: this.describeVector(velocity),
+      ammo: this.grenadeAmmo
+    });
+    this.updateHud();
+  }
+
+  private explodeGrenade(position: THREE.Vector3) {
+    this.setStatus("Grenade blast");
+    this.spawnExplosion(position);
+    const blastRadius = 4.4;
+    this.targets.forEach((target) => {
+      if (!target.active) return;
+      const targetPosition = new THREE.Vector3();
+      target.root.getWorldPosition(targetPosition);
+      const distance = targetPosition.distanceTo(position);
+      if (distance > blastRadius) return;
+      const damage = distance < 2.1 ? target.maxHp : 1;
+      target.hp -= damage;
+      this.score += damage * 10;
+      target.root.scale.multiplyScalar(0.9);
+      this.spawnImpact(targetPosition.add(new THREE.Vector3(0, 0.65, 0)), palette.coral);
+      if (target.hp <= 0) {
+        target.active = false;
+        target.root.visible = false;
+        this.score += 40;
+      }
+    });
+    this.cameraRecoilPitch += 0.018;
+    this.cameraRecoilYaw += (Math.random() - 0.5) * 0.018;
+    this.updateHud();
+    this.logDebugEvent("grenade-explode", {
+      position: this.describeVector(position),
+      activeTargets: this.targets.filter((target) => target.active).length
+    });
+  }
+
   private shoot() {
     if (this.reloadTimer > 0 || this.shotCooldown > 0) return;
     if (this.ammo <= 0) {
@@ -862,6 +1248,7 @@ class SunlitPatrol {
     this.shotCooldown = rifleTuning.cooldown;
     this.impactPulse = 1;
     this.fadeTo("Shoot_OneHanded", true);
+    this.playFirstPersonFireAnimation();
     this.flashCrosshair();
 
     const muzzle = this.getMuzzleWorldPosition();
@@ -885,6 +1272,10 @@ class SunlitPatrol {
   }
 
   private getMuzzleWorldPosition() {
+    if (this.cameraMode === "first") {
+      const cameraRay = this.getCameraCenterRay();
+      return cameraRay.origin.clone().addScaledVector(cameraRay.direction, 0.82);
+    }
     const forward = new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw)).normalize();
     const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
     return this.player.position
@@ -895,6 +1286,17 @@ class SunlitPatrol {
   }
 
   private getVisualMuzzleWorldPosition(direction: THREE.Vector3) {
+    if (this.cameraMode === "first") {
+      const right = new THREE.Vector3().crossVectors(direction, new THREE.Vector3(0, 1, 0));
+      if (right.lengthSq() < 0.001) right.set(1, 0, 0);
+      right.normalize();
+      const up = new THREE.Vector3().crossVectors(right, direction).normalize();
+      return this.camera.position
+        .clone()
+        .addScaledVector(right, 0.46)
+        .addScaledVector(up, -0.34)
+        .addScaledVector(direction, 1.06);
+    }
     const forward = new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw)).normalize();
     const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
     return this.player.position
@@ -1151,6 +1553,8 @@ class SunlitPatrol {
       cameraRecoilYawDeg: rounded(THREE.MathUtils.radToDeg(this.cameraRecoilYaw), 2),
       pointerLocked: this.isPointerLocked,
       mouseAimActive: this.mouseAimActive,
+      ads: this.isAimingDownSights,
+      cameraMode: this.cameraMode,
       keys: Array.from(this.keys).sort().join(","),
       moving: shot.moving,
       spreadDeg: rounded(shot.spread, 3),
@@ -1264,12 +1668,13 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     const liveText = [
       "LIVE DEBUG (F3 toggle, console: window.__sunlitDebug.dump())",
       `frame=${live.frame} time=${live.time} ready=${live.ready} pointer=${live.pointerLocked ? "locked" : "free"} mouseAim=${live.mouseAimActive}`,
+      `cameraMode=${live.cameraMode} activeAction=${live.activeAction}`,
       `keys=${live.keys || "none"} lastMouse=${JSON.stringify(live.lastMouseDelta)} viewport=${JSON.stringify(live.viewport)}`,
       `yaw=${live.yawDeg} pitch=${live.pitchDeg} recoil=(${live.cameraRecoilPitchDeg}, ${live.cameraRecoilYawDeg}) ammo=${live.ammo} cooldown=${live.shotCooldown} reload=${live.reloadTimer}`,
       `player=${JSON.stringify(live.player?.world ?? null)} velocity=${JSON.stringify(live.velocity)} camera=${JSON.stringify(live.camera.position)} fwd=${JSON.stringify(live.camera.forward)}`,
       `cameraRay=${JSON.stringify(live.cameraCenterRay.direction)} shotAim=${JSON.stringify(live.aimDirection)} controlAim=${JSON.stringify(live.cameraControlDirection)} control/cam=${live.controlVsCameraAngleDeg}deg`,
       `muzzle=${JSON.stringify(live.muzzle.world)} screen=${JSON.stringify(live.muzzle.screen)} visual=${JSON.stringify(live.visualMuzzle.world)} screen=${JSON.stringify(live.visualMuzzle.screen)}`,
-      `socket=${JSON.stringify(live.weaponSocket?.world ?? null)} hand=${JSON.stringify(live.rightHand?.world ?? null)} targets=${live.activeTargetCount} effects=${live.effects} projectiles=${live.projectiles}`
+      `socket=${JSON.stringify(live.weaponSocket?.world ?? null)} hand=${JSON.stringify(live.rightHand?.world ?? null)} targets=${live.activeTargetCount} effects=${live.effects} projectiles=${live.projectiles} grenades=${live.grenades}`
     ].join("\n");
     const eventsText = this.debugEvents.length > 0 ? `RECENT INPUT/EVENTS\n${this.debugEvents.slice(0, 8).join("\n")}` : "RECENT INPUT/EVENTS\nnone";
     const shotsText = this.debugHistory.length > 0 ? `SHOT HISTORY\n${this.debugHistory.join("\n\n")}` : "SHOT HISTORY\nFire a shot for telemetry.";
@@ -1288,6 +1693,8 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
       ready: this.isReady,
       pointerLocked: this.isPointerLocked,
       mouseAimActive: this.mouseAimActive,
+      ads: this.isAimingDownSights,
+      cameraMode: this.cameraMode,
       keys: this.describeKeys(),
       lastMouseDelta: this.lastMouseDelta,
       viewport: this.describeViewport(),
@@ -1300,6 +1707,9 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
       health: this.health,
       shotCooldown: rounded(this.shotCooldown, 4),
       reloadTimer: rounded(this.reloadTimer, 4),
+      reloadAnimTimer: rounded(this.reloadAnimTimer, 4),
+      grenadeAmmo: this.grenadeAmmo,
+      grenadeCooldown: rounded(this.grenadeCooldown, 4),
       status: statusEl.textContent || "",
       activeAction: this.activeAction,
       velocity: this.describeVector(this.playerVelocity),
@@ -1322,6 +1732,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
       targets: this.describeActiveTargets(),
       effects: this.effects.length,
       projectiles: this.projectiles.length,
+      grenades: this.grenades.length,
       renderer: {
         pixelRatio: rounded(this.renderer.getPixelRatio(), 2),
         calls: this.renderer.info.render.calls,
@@ -1607,6 +2018,96 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     }
   }
 
+  private spawnGroundDust(position: THREE.Vector3) {
+    const dust = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: this.smokeTexture,
+        color: "#9e947d",
+        transparent: true,
+        opacity: 0.26,
+        depthWrite: false
+      })
+    );
+    dust.position.copy(position).add(new THREE.Vector3(0, 0.08, 0));
+    dust.scale.setScalar(0.34);
+    dust.userData.life = 0.22;
+    dust.userData.maxLife = 0.22;
+    dust.userData.velocity = new THREE.Vector3(0, 0.18, 0);
+    dust.userData.baseOpacity = 0.26;
+    this.effects.push(dust);
+    this.scene.add(dust);
+  }
+
+  private spawnExplosion(position: THREE.Vector3) {
+    const flash = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: this.muzzleFlashTexture,
+        color: "#fff2c0",
+        blending: THREE.AdditiveBlending,
+        transparent: true,
+        opacity: 1,
+        depthTest: false,
+        depthWrite: false
+      })
+    );
+    flash.position.copy(position).add(new THREE.Vector3(0, 0.55, 0));
+    flash.scale.set(2.2, 1.5, 1);
+    flash.renderOrder = 130;
+    flash.userData.life = 0.18;
+    flash.userData.maxLife = 0.18;
+    flash.userData.velocity = new THREE.Vector3(0, 0.45, 0);
+    flash.userData.baseOpacity = 1;
+    this.effects.push(flash);
+    this.scene.add(flash);
+
+    const light = new THREE.PointLight("#ff8c3a", 8.5, 9);
+    light.position.copy(position).add(new THREE.Vector3(0, 0.8, 0));
+    light.userData.life = 0.18;
+    light.userData.maxLife = 0.18;
+    light.userData.velocity = new THREE.Vector3();
+    this.effects.push(light);
+    this.scene.add(light);
+
+    for (let i = 0; i < 18; i += 1) {
+      const angle = (i / 18) * Math.PI * 2;
+      const outward = new THREE.Vector3(Math.cos(angle), 0.2 + Math.random() * 0.6, Math.sin(angle)).normalize();
+      const ember = new THREE.Mesh(
+        new THREE.SphereGeometry(0.035 + Math.random() * 0.025, 8, 8),
+        new THREE.MeshBasicMaterial({
+          color: i % 3 === 0 ? "#fff2b2" : "#ff7a2e",
+          transparent: true,
+          opacity: 0.86
+        })
+      );
+      ember.position.copy(position).add(new THREE.Vector3(0, 0.35, 0));
+      ember.userData.life = 0.42 + Math.random() * 0.22;
+      ember.userData.maxLife = ember.userData.life;
+      ember.userData.velocity = outward.multiplyScalar(2.4 + Math.random() * 2.2);
+      this.effects.push(ember);
+      this.scene.add(ember);
+    }
+
+    for (let i = 0; i < 5; i += 1) {
+      const smoke = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: this.smokeTexture,
+          color: "#80796b",
+          transparent: true,
+          opacity: 0.32,
+          depthWrite: false
+        })
+      );
+      smoke.position.copy(position).add(new THREE.Vector3((Math.random() - 0.5) * 0.55, 0.35 + Math.random() * 0.35, (Math.random() - 0.5) * 0.55));
+      smoke.scale.setScalar(0.62 + Math.random() * 0.42);
+      smoke.userData.life = 0.78 + Math.random() * 0.35;
+      smoke.userData.maxLife = smoke.userData.life;
+      smoke.userData.velocity = new THREE.Vector3((Math.random() - 0.5) * 0.42, 0.62 + Math.random() * 0.42, (Math.random() - 0.5) * 0.42);
+      smoke.userData.baseOpacity = 0.32;
+      this.effects.push(smoke);
+      this.scene.add(smoke);
+    }
+  }
+
   private spawnBulletMark(position: THREE.Vector3, color: THREE.Color) {
     const onGround = position.y <= 0.13;
     const normal = onGround ? new THREE.Vector3(0, 1, 0) : this.camera.position.clone().sub(position).normalize();
@@ -1646,9 +2147,10 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
   }
 
   private spawnMuzzleBurst(position: THREE.Vector3, direction: THREE.Vector3) {
+    const firstPerson = this.cameraMode === "first";
     const flashPosition = position.clone().addScaledVector(direction, 0.08);
     const flame = new THREE.Mesh(
-      new THREE.ConeGeometry(0.18, 0.52, 8, 1, true),
+      new THREE.ConeGeometry(firstPerson ? 0.09 : 0.18, firstPerson ? 0.28 : 0.52, 8, 1, true),
       new THREE.MeshBasicMaterial({
         color: "#ff9b3d",
         blending: THREE.AdditiveBlending,
@@ -1682,7 +2184,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     );
     burst.renderOrder = 128;
     burst.position.copy(flashPosition);
-    burst.scale.set(0.54, 0.28, 1);
+    burst.scale.set(firstPerson ? 0.22 : 0.54, firstPerson ? 0.12 : 0.28, 1);
     burst.userData.life = 0.075;
     burst.userData.maxLife = 0.075;
     burst.userData.velocity = direction.clone().multiplyScalar(0.12);
@@ -1702,8 +2204,8 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
       })
     );
     streak.renderOrder = 127;
-    streak.position.copy(flashPosition).addScaledVector(direction, 0.32);
-    streak.scale.set(0.72, 0.09, 1);
+    streak.position.copy(flashPosition).addScaledVector(direction, firstPerson ? 0.18 : 0.32);
+    streak.scale.set(firstPerson ? 0.28 : 0.72, firstPerson ? 0.045 : 0.09, 1);
     streak.userData.life = 0.055;
     streak.userData.maxLife = 0.055;
     streak.userData.velocity = direction.clone().multiplyScalar(0.38);
@@ -1725,7 +2227,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
       );
       smoke.renderOrder = 25;
       smoke.position.copy(flashPosition).addScaledVector(direction, 0.15 + i * 0.12);
-      smoke.scale.setScalar(0.22 + i * 0.08);
+      smoke.scale.setScalar((firstPerson ? 0.12 : 0.22) + i * (firstPerson ? 0.04 : 0.08));
       smoke.userData.life = 0.22 + i * 0.05;
       smoke.userData.maxLife = smoke.userData.life;
       smoke.userData.velocity = direction.clone().multiplyScalar(0.32 + i * 0.18).add(new THREE.Vector3(0, 0.05, 0));
@@ -1777,6 +2279,10 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
   private reload() {
     if (this.ammo === 12 || this.reloadTimer > 0) return;
     this.reloadTimer = 0.8;
+    this.reloadAnimTimer = 0.8;
+    this.isFiring = false;
+    this.isAimingDownSights = false;
+    this.fadeTo("Reload", true);
     window.setTimeout(() => {
       this.ammo = 12;
       this.updateHud();
@@ -1784,6 +2290,32 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     }, 800);
     this.setStatus("Reloading");
     this.updateHud();
+  }
+
+  private jump() {
+    if (this.jumpAnimTimer > 0 || this.reloadTimer > 0) return;
+    this.jumpAnimTimer = 0.58;
+    this.fadeTo("Jump", true);
+    this.setStatus("Jump");
+  }
+
+  private toggleCameraMode() {
+    this.cameraMode = this.cameraMode === "third" ? "first" : "third";
+    if (this.cameraMode === "third") {
+      this.pitch = THREE.MathUtils.clamp(this.pitch, -0.2, 0.22);
+    }
+    this.player.visible = this.cameraMode === "third";
+    if (this.firstPersonRig) this.firstPersonRig.visible = this.cameraMode === "first";
+    this.setStatus(this.cameraMode === "first" ? "First person" : "Third person");
+    this.logDebugEvent("camera-mode", { mode: this.cameraMode });
+  }
+
+  private playFirstPersonFireAnimation() {
+    if (this.cameraMode !== "first" || !this.firstPersonFireAction) return;
+    this.firstPersonFireAction.stop();
+    this.firstPersonFireAction.reset();
+    this.firstPersonFireAction.setEffectiveWeight(1);
+    this.firstPersonFireAction.play();
   }
 
   private flashCrosshair() {
@@ -1813,7 +2345,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
 
   private updateHud() {
     scoreEl.textContent = `${this.score}`;
-    ammoEl.textContent = this.reloadTimer > 0 ? "..." : `${this.ammo} / 12`;
+    ammoEl.textContent = this.reloadTimer > 0 ? "..." : `${this.ammo} / 12  G:${this.grenadeAmmo}`;
     healthEl.textContent = `${this.health}`;
   }
 }
