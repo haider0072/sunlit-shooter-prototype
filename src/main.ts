@@ -17,6 +17,7 @@ import {
 } from "./game/config";
 import { AnimationController } from "./game/AnimationController";
 import { AudioEngine } from "./game/AudioEngine";
+import { DebugOverlay } from "./game/DebugOverlay";
 import { EffectManager } from "./game/EffectManager";
 import { HUDManager } from "./game/HUDManager";
 import { InputManager } from "./game/InputManager";
@@ -151,14 +152,11 @@ class SunlitPatrol {
   private crouchBlend = 0;
   private footstepTimer = 0;
   private footstepSide = 1;
-  private debugEnabled = new URLSearchParams(window.location.search).has("debug");
+  private readonly debug = new DebugOverlay(debugPanelEl);
   private readonly useRokokoRifleRig = urlParams.get("rig") === "rokoko";
   private shotSequence = 0;
   private frameSequence = 0;
   private debugLiveTimer = 0;
-  private debugHistory: string[] = [];
-  private debugEvents: string[] = [];
-  private debugShotRecords: unknown[] = [];
   private cameraMode: CameraMode = "third";
 
   constructor() {
@@ -180,6 +178,7 @@ class SunlitPatrol {
     this.createWorld();
     this.bindEvents();
     this.installDebugBridge();
+    if (urlParams.has("debug")) this.setDebugEnabled(true);
   }
 
   async init() {
@@ -188,7 +187,7 @@ class SunlitPatrol {
     this.isReady = true;
     hud.hideLoader();
     this.setStatus("Range online");
-    this.setDebugEnabled(this.debugEnabled);
+    if (this.debug.isEnabled()) this.renderDebugPanel();
     this.updateHud();
     this.renderer.setAnimationLoop(() => this.update());
   }
@@ -638,11 +637,12 @@ class SunlitPatrol {
       onReload: () => this.reload(),
       onGrenade: () => this.throwGrenade(),
       onJump: () => this.jump(),
-      onToggleDebug: () => this.setDebugEnabled(!this.debugEnabled),
+      onToggleDebug: () => this.setDebugEnabled(!this.debug.isEnabled()),
+
       onToggleCamera: () => this.toggleCameraMode(),
       onToggleControls: () => this.toggleControlsPanel(),
       onMouseLook: (dx, dy) => {
-        if (this.debugEnabled && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+        if (this.debug.isEnabled() && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
           this.logDebugEvent("mouse-look", {
             dx,
             dy,
@@ -741,7 +741,7 @@ class SunlitPatrol {
     this.animation.update(dt);
     this.firstPersonMixer?.update(dt);
     this.renderer.render(this.scene, this.camera);
-    if (this.debugEnabled && this.debugLiveTimer >= 0.25) {
+    if (this.debug.isEnabled() && this.debugLiveTimer >= 0.25) {
       this.debugLiveTimer = 0;
       this.renderDebugPanel();
     }
@@ -820,7 +820,7 @@ class SunlitPatrol {
         fpSwayX * 1.2 + reloadT * 0.18
       );
     }
-    if (dt > 0.045 && this.debugEnabled) {
+    if (dt > 0.045 && this.debug.isEnabled()) {
       this.logDebugEvent("long-frame", { dt: rounded(dt, 4), effects: this.effects.count, projectiles: this.projectiles.count });
     }
   }
@@ -1269,25 +1269,20 @@ class SunlitPatrol {
     }).__sunlitDebug = {
       dump: () => ({
         live: this.getDebugLiveState(),
-        shots: this.debugShotRecords,
-        events: this.debugEvents
+        shots: this.debug.getShotRecords(),
+        events: this.debug.getEvents()
       }),
-      shots: () => this.debugShotRecords,
+      shots: () => this.debug.getShotRecords(),
       state: () => this.getDebugLiveState(),
-      events: () => this.debugEvents,
+      events: () => this.debug.getEvents(),
       setDebug: (enabled: boolean) => this.setDebugEnabled(enabled),
       fire: () => this.shoot()
     };
   }
 
   private setDebugEnabled(enabled: boolean) {
-    this.debugEnabled = enabled;
-    debugPanelEl.classList.toggle("active", enabled);
-    debugPanelEl.setAttribute("aria-hidden", enabled ? "false" : "true");
-    if (!enabled) {
-      debugPanelEl.textContent = "";
-      return;
-    }
+    this.debug.setEnabled(enabled);
+    if (!enabled) return;
     this.logDebugEvent("debug-enabled", { via: "setDebugEnabled" });
     this.renderDebugPanel();
   }
@@ -1307,7 +1302,7 @@ class SunlitPatrol {
     shot: ShotResult,
     preShot: PreShotState
   ) {
-    if (!this.debugEnabled) return;
+    if (!this.debug.isEnabled()) return;
 
     this.shotSequence += 1;
     const cameraCenter = this.getCameraCenterRay();
@@ -1380,7 +1375,7 @@ class SunlitPatrol {
       rangeDistance: rounded(shot.rangeDistance, 3),
       crosshairErrorPx: this.crosshairError(shot.point),
       activeTargets: this.describeActiveTargets(),
-      recentEvents: this.debugEvents.slice(0, 8),
+      recentEvents: this.debug.getEvents().slice(0, 8),
       tuning: {
         range: rifleTuning.range,
         cooldown: rifleTuning.cooldown,
@@ -1391,8 +1386,6 @@ class SunlitPatrol {
       }
     };
 
-    this.debugShotRecords.unshift(frame);
-    this.debugShotRecords = this.debugShotRecords.slice(0, 20);
     const title = `[shot ${frame.shot}] ${frame.result} dist=${frame.rangeDistance} spread=${frame.spreadDeg}`;
     console.groupCollapsed(title);
     console.table({
@@ -1437,22 +1430,20 @@ dist muzzle=${frame.muzzleToImpact} visual=${frame.visualToImpact} origin=${fram
 camera pos=${JSON.stringify(frame.camera.position)} fwd=${JSON.stringify(frame.camera.forward)}
 socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${JSON.stringify(frame.rightHand?.world ?? null)}`;
 
-    this.debugHistory.unshift(line);
-    this.debugHistory = this.debugHistory.slice(0, 6);
+    this.debug.pushShot(line, frame);
     this.renderDebugPanel();
   }
 
   private logDebugEvent(name: string, data: Record<string, unknown> = {}) {
-    if (!this.debugEnabled) return;
+    if (!this.debug.isEnabled()) return;
     const line = `[${rounded(performance.now(), 1)} f${this.frameSequence}] ${name} ${JSON.stringify(data)}`;
-    this.debugEvents.unshift(line);
-    this.debugEvents = this.debugEvents.slice(0, 40);
+    this.debug.logEvent(line);
     console.debug(`[sunlit-debug:${name}]`, data);
     this.renderDebugPanel();
   }
 
   private renderDebugPanel() {
-    if (!this.debugEnabled) return;
+    if (!this.debug.isEnabled()) return;
     const live = this.getDebugLiveState();
     const liveText = [
       "LIVE DEBUG (F3 toggle, console: window.__sunlitDebug.dump())",
@@ -1465,9 +1456,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
       `muzzle=${JSON.stringify(live.muzzle.world)} screen=${JSON.stringify(live.muzzle.screen)} visual=${JSON.stringify(live.visualMuzzle.world)} screen=${JSON.stringify(live.visualMuzzle.screen)}`,
       `socket=${JSON.stringify(live.weaponSocket?.world ?? null)} hand=${JSON.stringify(live.rightHand?.world ?? null)} targets=${live.activeTargetCount} effects=${live.effects} projectiles=${live.projectiles} grenades=${live.grenades}`
     ].join("\n");
-    const eventsText = this.debugEvents.length > 0 ? `RECENT INPUT/EVENTS\n${this.debugEvents.slice(0, 8).join("\n")}` : "RECENT INPUT/EVENTS\nnone";
-    const shotsText = this.debugHistory.length > 0 ? `SHOT HISTORY\n${this.debugHistory.join("\n\n")}` : "SHOT HISTORY\nFire a shot for telemetry.";
-    debugPanelEl.textContent = `${liveText}\n\n${eventsText}\n\n${shotsText}`;
+    this.debug.render(liveText);
   }
 
   private getDebugLiveState() {
@@ -1651,7 +1640,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
   }
 
   private spawnDebugShotMarkers(muzzle: THREE.Vector3, visualMuzzle: THREE.Vector3, impact: THREE.Vector3) {
-    if (!this.debugEnabled) return;
+    if (!this.debug.isEnabled()) return;
     [
       { point: muzzle, color: "#2f9c95", size: 0.045 },
       { point: visualMuzzle, color: "#fff4dc", size: 0.055 },
