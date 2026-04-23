@@ -113,6 +113,8 @@ const statusEl = requiredElement<HTMLDivElement>("#status");
 const objectiveEl = requiredElement<HTMLSpanElement>("#objective");
 const crosshairEl = requiredElement<HTMLDivElement>(".crosshair");
 const debugPanelEl = requiredElement<HTMLPreElement>("#debugPanel");
+const controlsButton = requiredElement<HTMLButtonElement>("#controlsButton");
+const controlsPanel = requiredElement<HTMLElement>("#controlsPanel");
 const urlParams = new URLSearchParams(window.location.search);
 
 const palette = {
@@ -765,6 +767,9 @@ class SunlitPatrol {
       if (event.code === "KeyV" && !event.repeat) {
         this.toggleCameraMode();
       }
+      if (event.code === "KeyH" && !event.repeat) {
+        this.toggleControlsPanel();
+      }
       if (event.code === "Space") {
         event.preventDefault();
         this.jump();
@@ -842,6 +847,10 @@ class SunlitPatrol {
       this.logDebugEvent("start-click", { pointerLocked: this.isPointerLocked });
       this.requestPointerLock();
       this.setStatus("Mouse aim active");
+    });
+
+    controlsButton.addEventListener("click", () => {
+      this.toggleControlsPanel();
     });
 
     window.addEventListener("blur", () => {
@@ -1515,6 +1524,15 @@ class SunlitPatrol {
     }
     this.logDebugEvent("debug-enabled", { via: "setDebugEnabled" });
     this.renderDebugPanel();
+  }
+
+  private toggleControlsPanel(force?: boolean) {
+    const active = force ?? !controlsPanel.classList.contains("active");
+    controlsPanel.classList.toggle("active", active);
+    controlsPanel.setAttribute("aria-hidden", active ? "false" : "true");
+    controlsButton.setAttribute("aria-expanded", active ? "true" : "false");
+    controlsButton.setAttribute("aria-label", active ? "Hide controls" : "Show controls");
+    this.logDebugEvent("controls-panel", { active });
   }
 
   private logShotTelemetry(

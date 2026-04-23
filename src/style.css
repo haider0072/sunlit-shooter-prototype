@@ -160,6 +160,88 @@ body {
     background 140ms ease;
 }
 
+.hud-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--ink);
+  background: rgba(255, 245, 219, 0.9);
+  box-shadow: 4px 5px 0 var(--shadow);
+  font: inherit;
+  font-size: 20px;
+  font-weight: 900;
+  cursor: pointer;
+  transition:
+    transform 140ms ease,
+    box-shadow 140ms ease,
+    background 140ms ease;
+}
+
+.icon-button:hover,
+.icon-button[aria-expanded="true"] {
+  background: #ffffff;
+  transform: translate(1px, 1px);
+  box-shadow: 3px 4px 0 var(--shadow);
+}
+
+.controls-panel {
+  position: fixed;
+  z-index: 9;
+  right: 18px;
+  bottom: 76px;
+  display: none;
+  width: min(360px, calc(100vw - 36px));
+  max-height: min(55vh, 460px);
+  overflow: auto;
+  padding: 12px;
+  border: 2px solid rgba(49, 64, 72, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 245, 219, 0.9);
+  box-shadow: 4px 5px 0 rgba(49, 64, 72, 0.1);
+  backdrop-filter: blur(12px);
+  pointer-events: auto;
+}
+
+.controls-panel.active {
+  display: block;
+}
+
+.controls-grid {
+  display: grid;
+  grid-template-columns: minmax(92px, 118px) 1fr;
+  gap: 8px 10px;
+  align-items: center;
+  color: var(--ink);
+}
+
+.controls-grid span {
+  display: inline-grid;
+  place-items: center;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(49, 64, 72, 0.11);
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.controls-grid b {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
 #startButton:hover {
   background: #263239;
   transform: translate(1px, 1px);
@@ -421,5 +503,24 @@ body {
 
   #status {
     max-width: calc(100vw - 136px);
+  }
+
+  .hud-bottom {
+    align-items: flex-end;
+  }
+
+  .hud-actions {
+    flex-direction: column;
+  }
+
+  #startButton,
+  .icon-button {
+    width: 76px;
+  }
+
+  .controls-panel {
+    right: 12px;
+    bottom: 118px;
+    width: min(320px, calc(100vw - 24px));
   }
 }

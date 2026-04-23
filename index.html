@@ -28,8 +28,27 @@
       </header>
       <footer class="hud hud-bottom">
         <div id="status">Ready</div>
-        <button id="startButton" type="button">Start</button>
+        <div class="hud-actions">
+          <button id="controlsButton" class="icon-button" type="button" aria-label="Show controls" aria-expanded="false" aria-controls="controlsPanel" title="Controls">?</button>
+          <button id="startButton" type="button">Start</button>
+        </div>
       </footer>
+      <section id="controlsPanel" class="controls-panel" aria-hidden="true">
+        <div class="controls-grid">
+          <span>WASD</span><b>Move</b>
+          <span>Mouse</span><b>Aim</b>
+          <span>Left Click</span><b>Fire</b>
+          <span>Right Click</span><b>ADS</b>
+          <span>R</span><b>Reload</b>
+          <span>G</span><b>Grenade</b>
+          <span>C / Ctrl</span><b>Crouch</b>
+          <span>Shift + W</span><b>Sprint</b>
+          <span>Space</span><b>Jump</b>
+          <span>V</span><b>View</b>
+          <span>H / ?</span><b>Controls</b>
+          <span>F3</span><b>Debug</b>
+        </div>
+      </section>
       <div id="loader" class="loader">
         <div class="loader-mark"></div>
         <p>Preparing the range</p>
