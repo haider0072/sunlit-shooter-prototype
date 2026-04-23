@@ -66,12 +66,12 @@ const rifleTuning = {
   damage: 1,
   range: 96,
   cooldown: 0.105,
-  hipSpread: 0.045,
-  movingSpread: 0.16,
-  recoilPitch: 0.022,
-  recoilYaw: 0.006,
-  visualRecoilPitch: 0.035,
-  visualRecoilYaw: 0.012
+  hipSpread: 0.035,
+  movingSpread: 0.12,
+  recoilPitch: 0.006,
+  recoilYaw: 0.004,
+  visualRecoilPitch: 0.014,
+  visualRecoilYaw: 0.005
 };
 
 function requiredElement<T extends HTMLElement>(selector: string) {
@@ -136,6 +136,8 @@ class SunlitPatrol {
   private readonly tmpVec = new THREE.Vector3();
   private readonly tmpVec2 = new THREE.Vector3();
   private readonly tmpQuat = new THREE.Quaternion();
+  private readonly muzzleFlashTexture = this.createMuzzleFlashTexture();
+  private readonly smokeTexture = this.createSmokeTexture();
   private readonly player = new THREE.Group();
   private readonly weaponSocket = new THREE.Group();
   private readonly cameraTarget = new THREE.Vector3(0, 1.15, 0);
@@ -191,6 +193,54 @@ class SunlitPatrol {
     this.createWorld();
     this.bindEvents();
     this.installDebugBridge();
+  }
+
+  private createMuzzleFlashTexture() {
+    const textureCanvas = document.createElement("canvas");
+    textureCanvas.width = 128;
+    textureCanvas.height = 128;
+    const ctx = textureCanvas.getContext("2d");
+    if (!ctx) throw new Error("Unable to create muzzle flash texture");
+
+    const gradient = ctx.createRadialGradient(64, 64, 2, 64, 64, 62);
+    gradient.addColorStop(0, "rgba(255,255,245,1)");
+    gradient.addColorStop(0.18, "rgba(255,244,190,0.95)");
+    gradient.addColorStop(0.42, "rgba(255,142,45,0.55)");
+    gradient.addColorStop(0.72, "rgba(255,86,28,0.18)");
+    gradient.addColorStop(1, "rgba(255,86,28,0)");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 128, 128);
+
+    const streak = ctx.createLinearGradient(0, 64, 128, 64);
+    streak.addColorStop(0, "rgba(255,120,35,0)");
+    streak.addColorStop(0.32, "rgba(255,188,80,0.55)");
+    streak.addColorStop(0.5, "rgba(255,255,230,0.96)");
+    streak.addColorStop(0.68, "rgba(255,188,80,0.48)");
+    streak.addColorStop(1, "rgba(255,120,35,0)");
+    ctx.fillStyle = streak;
+    ctx.fillRect(0, 54, 128, 20);
+
+    const texture = new THREE.CanvasTexture(textureCanvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+  }
+
+  private createSmokeTexture() {
+    const textureCanvas = document.createElement("canvas");
+    textureCanvas.width = 96;
+    textureCanvas.height = 96;
+    const ctx = textureCanvas.getContext("2d");
+    if (!ctx) throw new Error("Unable to create smoke texture");
+    const gradient = ctx.createRadialGradient(48, 48, 3, 48, 48, 46);
+    gradient.addColorStop(0, "rgba(210,205,185,0.34)");
+    gradient.addColorStop(0.45, "rgba(150,145,125,0.16)");
+    gradient.addColorStop(1, "rgba(100,100,90,0)");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 96, 96);
+
+    const texture = new THREE.CanvasTexture(textureCanvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
   }
 
   async init() {
@@ -671,8 +721,8 @@ class SunlitPatrol {
   private updateWeaponPose(dt: number) {
     if (!this.weapon) return;
     const sway = Math.sin(performance.now() * 0.006) * (this.playerVelocity.lengthSq() > 0.4 ? 0.018 : 0.006);
-    this.weapon.position.set(-this.weaponKick * 0.16, -0.01 + Math.abs(sway) * 0.35, this.weaponKickSide * 0.08 + sway);
-    this.weapon.rotation.set(-this.weaponKick * 0.26, this.weaponKickSide * 0.08, sway * 0.8);
+    this.weapon.position.set(-this.weaponKick * 0.08, -0.006 + Math.abs(sway) * 0.28, this.weaponKickSide * 0.05 + sway);
+    this.weapon.rotation.set(-this.weaponKick * 0.12, this.weaponKickSide * 0.045, sway * 0.65);
     if (dt > 0.045 && this.debugEnabled) {
       this.logDebugEvent("long-frame", { dt: rounded(dt, 4), effects: this.effects.length, projectiles: this.projectiles.length });
     }
@@ -737,7 +787,10 @@ class SunlitPatrol {
       }
       if (!effect.userData.noScale) effect.scale.multiplyScalar(1 + dt * 2.5);
       const opacity = Math.max(0, effect.userData.life / effect.userData.maxLife);
-      if ((effect as THREE.Mesh).isMesh) {
+      if ((effect as THREE.Sprite).isSprite) {
+        const mat = (effect as THREE.Sprite).material as THREE.SpriteMaterial;
+        mat.opacity = opacity * (effect.userData.baseOpacity ?? 1);
+      } else if ((effect as THREE.Mesh).isMesh) {
         const mat = (effect as THREE.Mesh).material as THREE.MeshBasicMaterial;
         mat.opacity = opacity;
       } else if ((effect as THREE.Light).isLight) {
@@ -757,6 +810,11 @@ class SunlitPatrol {
       }
       if (effect.userData.life <= 0) {
         this.scene.remove(effect);
+        if ((effect as THREE.Sprite).isSprite) {
+          ((effect as THREE.Sprite).material as THREE.SpriteMaterial).dispose();
+          this.effects.splice(i, 1);
+          continue;
+        }
         effect.traverse((child) => {
           if (!(child as THREE.Mesh).isMesh) return;
           const mesh = child as THREE.Mesh;
@@ -810,7 +868,6 @@ class SunlitPatrol {
     const shot = this.resolveRifleShot(muzzle);
     const visualMuzzle = this.getVisualMuzzleWorldPosition(shot.direction);
     this.spawnMuzzleBurst(visualMuzzle, shot.direction);
-    this.spawnProjectile(visualMuzzle, shot.point);
     this.spawnTracer(visualMuzzle, shot.point);
     this.spawnShellEjection(visualMuzzle, shot.direction);
     this.logShotTelemetry(muzzle, visualMuzzle, shot, preShot);
@@ -838,24 +895,14 @@ class SunlitPatrol {
   }
 
   private getVisualMuzzleWorldPosition(direction: THREE.Vector3) {
-    if (this.weapon) {
-      const bounds = new THREE.Box3().setFromObject(this.weapon);
-      if (!bounds.isEmpty()) {
-        const center = bounds.getCenter(new THREE.Vector3());
-        const size = bounds.getSize(new THREE.Vector3());
-        const radius = Math.max(size.x, size.y, size.z) * 0.5;
-        return center.addScaledVector(direction.clone().normalize(), radius + 0.08);
-      }
-    }
-
     const forward = new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw)).normalize();
     const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
     return this.player.position
       .clone()
-      .add(new THREE.Vector3(0, 0.92, 0))
-      .addScaledVector(right, 0.64)
-      .addScaledVector(forward, 0.2)
-      .addScaledVector(direction, 0.16);
+      .add(new THREE.Vector3(0, 0.98, 0))
+      .addScaledVector(right, 0.82)
+      .addScaledVector(forward, 0.34)
+      .addScaledVector(direction, 0.12);
   }
 
   private resolveRifleShot(muzzle: THREE.Vector3) {
@@ -1008,12 +1055,12 @@ class SunlitPatrol {
   }
 
   private applyShotRecoil() {
-    this.pitch = THREE.MathUtils.clamp(this.pitch + rifleTuning.recoilPitch, -0.48, 0.34);
-    this.yaw += (Math.random() - 0.5) * rifleTuning.recoilYaw;
+    this.pitch = THREE.MathUtils.clamp(this.pitch + rifleTuning.recoilPitch * 0.12, -0.48, 0.34);
+    this.yaw += (Math.random() - 0.5) * rifleTuning.recoilYaw * 0.2;
     this.cameraRecoilPitch += rifleTuning.visualRecoilPitch;
     this.cameraRecoilYaw += (Math.random() - 0.5) * rifleTuning.visualRecoilYaw;
-    this.weaponKick = Math.min(1, this.weaponKick + 0.95);
-    this.weaponKickSide = THREE.MathUtils.clamp(this.weaponKickSide + (Math.random() - 0.5) * 0.7, -0.8, 0.8);
+    this.weaponKick = Math.min(0.42, this.weaponKick + 0.34);
+    this.weaponKickSide = THREE.MathUtils.clamp(this.weaponKickSide + (Math.random() - 0.5) * 0.22, -0.28, 0.28);
   }
 
   private capturePreShotState(): PreShotState {
@@ -1410,19 +1457,20 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
   private spawnDebugShotMarkers(muzzle: THREE.Vector3, visualMuzzle: THREE.Vector3, impact: THREE.Vector3) {
     if (!this.debugEnabled) return;
     [
-      { point: muzzle, color: "#2f9c95", size: 0.16 },
-      { point: visualMuzzle, color: "#fff4dc", size: 0.2 },
-      { point: impact, color: "#ff705c", size: 0.22 }
+      { point: muzzle, color: "#2f9c95", size: 0.045 },
+      { point: visualMuzzle, color: "#fff4dc", size: 0.055 },
+      { point: impact, color: "#ff705c", size: 0.06 }
     ].forEach(({ point, color, size }) => {
       const marker = new THREE.Mesh(
         new THREE.SphereGeometry(size, 12, 12),
-        new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.9 })
+        new THREE.MeshBasicMaterial({ color, depthTest: false, depthWrite: false, transparent: true, opacity: 0.76 })
       );
       marker.renderOrder = 150;
       marker.position.copy(point);
-      marker.userData.life = 1.2;
-      marker.userData.maxLife = 1.2;
-      marker.userData.velocity = new THREE.Vector3(0, 0.08, 0);
+      marker.userData.life = 0.7;
+      marker.userData.maxLife = 0.7;
+      marker.userData.velocity = new THREE.Vector3(0, 0.025, 0);
+      marker.userData.noScale = true;
       this.effects.push(marker);
       this.scene.add(marker);
     });
@@ -1540,136 +1588,156 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
   }
 
   private spawnImpact(position: THREE.Vector3, color: THREE.Color) {
+    this.spawnBulletMark(position, color);
     for (let i = 0; i < 7; i += 1) {
       const mesh = new THREE.Mesh(
-        new THREE.SphereGeometry(0.045 + i * 0.005, 8, 8),
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 })
+        new THREE.SphereGeometry(0.026 + i * 0.003, 8, 8),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.72 })
       );
       mesh.position.copy(position);
-      mesh.userData.life = 0.35 + i * 0.018;
+      mesh.userData.life = 0.24 + i * 0.012;
       mesh.userData.maxLife = mesh.userData.life;
       mesh.userData.velocity = new THREE.Vector3(
-        (Math.random() - 0.5) * 3,
-        Math.random() * 2.3,
-        (Math.random() - 0.5) * 3
+        (Math.random() - 0.5) * 1.8,
+        Math.random() * 1.45,
+        (Math.random() - 0.5) * 1.8
       );
       this.effects.push(mesh);
       this.scene.add(mesh);
     }
   }
 
+  private spawnBulletMark(position: THREE.Vector3, color: THREE.Color) {
+    const onGround = position.y <= 0.13;
+    const normal = onGround ? new THREE.Vector3(0, 1, 0) : this.camera.position.clone().sub(position).normalize();
+    const markColor = color.equals(palette.coral) ? "#8d332d" : "#263239";
+    const mark = new THREE.Mesh(
+      new THREE.CircleGeometry(onGround ? 0.075 : 0.06, 14),
+      new THREE.MeshBasicMaterial({
+        color: markColor,
+        transparent: true,
+        opacity: 0.54,
+        depthWrite: false,
+        side: THREE.DoubleSide
+      })
+    );
+    mark.position.copy(position).addScaledVector(normal, 0.012);
+    mark.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+    mark.renderOrder = 40;
+    mark.userData.life = 4.5;
+    mark.userData.maxLife = 4.5;
+    mark.userData.velocity = new THREE.Vector3();
+    mark.userData.noScale = true;
+    this.effects.push(mark);
+    this.scene.add(mark);
+  }
+
   private spawnTracer(start: THREE.Vector3, end: THREE.Vector3) {
     const direction = end.clone().sub(start);
-    const length = Math.min(Math.max(direction.length(), 0.001), 48);
     direction.normalize();
-    const midpoint = start.clone().addScaledVector(direction, length * 0.5);
-    const geometry = new THREE.CylinderGeometry(0.032, 0.006, length, 8);
-    const material = new THREE.MeshBasicMaterial({
-      color: palette.coral,
-      depthTest: false,
-      transparent: true,
-      opacity: 0.72,
-      depthWrite: false
-    });
-    const tracer = new THREE.Mesh(geometry, material);
-    tracer.renderOrder = 100;
-    tracer.position.copy(midpoint);
-    tracer.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
-    tracer.userData.life = 0.11;
-    tracer.userData.maxLife = 0.11;
-    tracer.userData.velocity = new THREE.Vector3();
-    tracer.userData.noScale = true;
-    this.effects.push(tracer);
-    this.scene.add(tracer);
 
-    const core = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.011, 0.004, length * 0.74, 6),
-      new THREE.MeshBasicMaterial({ color: palette.cream, depthTest: false, depthWrite: false, transparent: true, opacity: 0.92 })
-    );
-    core.renderOrder = 101;
-    core.position.copy(start.clone().addScaledVector(direction, length * 0.36));
-    core.quaternion.copy(tracer.quaternion);
-    core.userData.life = 0.075;
-    core.userData.maxLife = 0.075;
-    core.userData.velocity = new THREE.Vector3();
-    core.userData.noScale = true;
-    this.effects.push(core);
-    this.scene.add(core);
-
-    const flash = new THREE.PointLight(palette.coral, 4.5, 6);
+    const flash = new THREE.PointLight(palette.coral, 2.8, 4.2);
     flash.position.copy(start);
-    flash.userData.life = 0.14;
-    flash.userData.maxLife = 0.14;
+    flash.userData.life = 0.055;
+    flash.userData.maxLife = 0.055;
     flash.userData.velocity = new THREE.Vector3();
     this.effects.push(flash);
     this.scene.add(flash);
   }
 
   private spawnMuzzleBurst(position: THREE.Vector3, direction: THREE.Vector3) {
-    const flashPosition = position.clone().addScaledVector(direction, 0.2);
-    const flash = new THREE.Group();
-    flash.position.copy(flashPosition);
-    flash.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.clone().normalize());
-
-    const cone = new THREE.Mesh(
-      new THREE.ConeGeometry(0.18, 0.42, 7, 1, true),
+    const flashPosition = position.clone().addScaledVector(direction, 0.08);
+    const flame = new THREE.Mesh(
+      new THREE.ConeGeometry(0.18, 0.52, 8, 1, true),
       new THREE.MeshBasicMaterial({
-        color: palette.coral,
+        color: "#ff9b3d",
+        blending: THREE.AdditiveBlending,
         depthTest: false,
         depthWrite: false,
         transparent: true,
-        opacity: 1,
+        opacity: 0.86,
         side: THREE.DoubleSide
       })
     );
-    cone.renderOrder = 120;
-    cone.position.y = 0.21;
-    cone.userData.transient = true;
-    flash.add(cone);
+    flame.renderOrder = 126;
+    flame.position.copy(flashPosition).addScaledVector(direction, 0.24);
+    flame.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.clone().normalize());
+    flame.userData.life = 0.065;
+    flame.userData.maxLife = 0.065;
+    flame.userData.velocity = direction.clone().multiplyScalar(0.16);
+    flame.userData.noScale = true;
+    this.effects.push(flame);
+    this.scene.add(flame);
 
-    const core = new THREE.Mesh(
-      new THREE.SphereGeometry(0.12, 10, 10),
-      new THREE.MeshBasicMaterial({ color: "#fff8d7", depthTest: false, depthWrite: false, transparent: true, opacity: 0.9 })
+    const burst = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: this.muzzleFlashTexture,
+        color: "#fff4dc",
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        depthWrite: false,
+        transparent: true,
+        opacity: 1
+      })
     );
-    core.renderOrder = 121;
-    core.userData.transient = true;
-    flash.add(core);
+    burst.renderOrder = 128;
+    burst.position.copy(flashPosition);
+    burst.scale.set(0.54, 0.28, 1);
+    burst.userData.life = 0.075;
+    burst.userData.maxLife = 0.075;
+    burst.userData.velocity = direction.clone().multiplyScalar(0.12);
+    burst.userData.noScale = true;
+    this.effects.push(burst);
+    this.scene.add(burst);
 
-    const glare = new THREE.Mesh(
-      new THREE.SphereGeometry(0.09, 8, 8),
-      new THREE.MeshBasicMaterial({ color: palette.cream, depthTest: false, depthWrite: false, transparent: true, opacity: 0.62 })
+    const streak = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: this.muzzleFlashTexture,
+        color: "#ff9b3d",
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        depthWrite: false,
+        transparent: true,
+        opacity: 0.62
+      })
     );
-    glare.renderOrder = 122;
-    glare.userData.transient = true;
-    flash.add(glare);
+    streak.renderOrder = 127;
+    streak.position.copy(flashPosition).addScaledVector(direction, 0.32);
+    streak.scale.set(0.72, 0.09, 1);
+    streak.userData.life = 0.055;
+    streak.userData.maxLife = 0.055;
+    streak.userData.velocity = direction.clone().multiplyScalar(0.38);
+    streak.userData.noScale = true;
+    streak.userData.baseOpacity = 0.62;
+    this.effects.push(streak);
+    this.scene.add(streak);
 
-    flash.renderOrder = 110;
-    flash.userData.life = 0.075;
-    flash.userData.maxLife = 0.075;
-    flash.userData.velocity = direction.clone().multiplyScalar(0.25);
-    flash.userData.noScale = true;
-    this.effects.push(flash);
-    this.scene.add(flash);
-
-    for (let i = 0; i < 5; i += 1) {
-      const spark = new THREE.Mesh(
-        new THREE.SphereGeometry(0.035, 8, 8),
-        new THREE.MeshBasicMaterial({ color: palette.cream, depthTest: false, transparent: true, opacity: 0.9 })
+    for (let i = 0; i < 2; i += 1) {
+      const smoke = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: this.smokeTexture,
+          color: "#b8b096",
+          depthTest: true,
+          depthWrite: false,
+          transparent: true,
+          opacity: 0.22
+        })
       );
-      spark.renderOrder = 111;
-      spark.position.copy(flashPosition);
-      const side = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.35, Math.random() - 0.5).multiplyScalar(0.65);
-      spark.userData.life = 0.09 + Math.random() * 0.04;
-      spark.userData.maxLife = spark.userData.life;
-      spark.userData.velocity = direction.clone().multiplyScalar(1.1 + Math.random() * 0.9).add(side);
-      this.effects.push(spark);
-      this.scene.add(spark);
+      smoke.renderOrder = 25;
+      smoke.position.copy(flashPosition).addScaledVector(direction, 0.15 + i * 0.12);
+      smoke.scale.setScalar(0.22 + i * 0.08);
+      smoke.userData.life = 0.22 + i * 0.05;
+      smoke.userData.maxLife = smoke.userData.life;
+      smoke.userData.velocity = direction.clone().multiplyScalar(0.32 + i * 0.18).add(new THREE.Vector3(0, 0.05, 0));
+      smoke.userData.baseOpacity = 0.22;
+      this.effects.push(smoke);
+      this.scene.add(smoke);
     }
 
-    const light = new THREE.PointLight(palette.coral, 3.8, 4.5);
+    const light = new THREE.PointLight(palette.coral, 3.8, 3.6);
     light.position.copy(flashPosition);
-    light.userData.life = 0.08;
-    light.userData.maxLife = 0.08;
+    light.userData.life = 0.065;
+    light.userData.maxLife = 0.065;
     light.userData.velocity = new THREE.Vector3();
     this.effects.push(light);
     this.scene.add(light);
