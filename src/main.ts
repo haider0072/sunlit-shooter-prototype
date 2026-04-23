@@ -24,6 +24,8 @@ type Target = {
   wobble: number;
   baseY: number;
   baseScale: number;
+  baseLift: number;
+  hoverAmplitude: number;
   active: boolean;
 };
 
@@ -115,6 +117,8 @@ const crosshairEl = requiredElement<HTMLDivElement>(".crosshair");
 const debugPanelEl = requiredElement<HTMLPreElement>("#debugPanel");
 const controlsButton = requiredElement<HTMLButtonElement>("#controlsButton");
 const controlsPanel = requiredElement<HTMLElement>("#controlsPanel");
+const volumeSlider = requiredElement<HTMLInputElement>("#volumeSlider");
+const volumeValueEl = requiredElement<HTMLSpanElement>("#volumeValue");
 const urlParams = new URLSearchParams(window.location.search);
 
 const palette = {
@@ -179,6 +183,314 @@ function createStaticPoseClip(name: string, source: THREE.AnimationClip, normali
   return new THREE.AnimationClip(name, 1, tracks);
 }
 
+class SoundEngine {
+  private static readonly storageKey = "sunlit-volume";
+  private context: AudioContext | null = null;
+  private master: GainNode | null = null;
+  private compressor: DynamicsCompressorNode | null = null;
+  private toneBus: GainNode | null = null;
+  private noiseBus: GainNode | null = null;
+  private noiseBuffer: AudioBuffer | null = null;
+  private volume = this.loadVolume();
+
+  resume() {
+    const context = this.ensureContext();
+    if (!context) return;
+    if (context.state === "suspended") {
+      void context.resume();
+    }
+  }
+
+  getVolume() {
+    return this.volume;
+  }
+
+  setVolume(next: number) {
+    this.volume = THREE.MathUtils.clamp(next, 0, 1);
+    if (this.master) {
+      this.master.gain.value = this.volume;
+    }
+    try {
+      window.localStorage.setItem(SoundEngine.storageKey, String(rounded(this.volume, 3)));
+    } catch {
+      // Ignore storage failures and keep runtime volume.
+    }
+  }
+
+  playShot(firstPerson: boolean, aimingDownSights: boolean) {
+    const context = this.ensureContext();
+    if (!context || !this.toneBus) return;
+    const now = context.currentTime;
+    const gain = firstPerson ? 0.28 : 0.2;
+    const tone = context.createOscillator();
+    tone.type = aimingDownSights ? "triangle" : "square";
+    tone.frequency.setValueAtTime(firstPerson ? 210 : 170, now);
+    tone.frequency.exponentialRampToValueAtTime(firstPerson ? 92 : 76, now + 0.08);
+    const toneGain = context.createGain();
+    toneGain.gain.setValueAtTime(0.0001, now);
+    toneGain.gain.exponentialRampToValueAtTime(gain, now + 0.002);
+    toneGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
+    tone.connect(toneGain);
+    toneGain.connect(this.toneBus);
+    tone.start(now);
+    tone.stop(now + 0.1);
+
+    this.playNoiseBurst({
+      duration: firstPerson ? 0.06 : 0.08,
+      gain: firstPerson ? 0.28 : 0.2,
+      highpass: 520,
+      lowpass: 4200
+    });
+  }
+
+  playDryImpact() {
+    const context = this.ensureContext();
+    if (!context || !this.toneBus) return;
+    const now = context.currentTime;
+    const osc = context.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(510, now);
+    osc.frequency.exponentialRampToValueAtTime(240, now + 0.06);
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.09, now + 0.002);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.07);
+    osc.connect(gain);
+    gain.connect(this.toneBus);
+    osc.start(now);
+    osc.stop(now + 0.08);
+  }
+
+  playHit(kill: boolean) {
+    const context = this.ensureContext();
+    if (!context || !this.toneBus) return;
+    const now = context.currentTime;
+    const osc = context.createOscillator();
+    osc.type = kill ? "triangle" : "sine";
+    osc.frequency.setValueAtTime(kill ? 640 : 780, now);
+    osc.frequency.exponentialRampToValueAtTime(kill ? 360 : 620, now + (kill ? 0.16 : 0.08));
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(kill ? 0.18 : 0.11, now + 0.003);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + (kill ? 0.18 : 0.1));
+    osc.connect(gain);
+    gain.connect(this.toneBus);
+    osc.start(now);
+    osc.stop(now + (kill ? 0.2 : 0.12));
+  }
+
+  playEmpty() {
+    const context = this.ensureContext();
+    if (!context || !this.toneBus) return;
+    const now = context.currentTime;
+    const osc = context.createOscillator();
+    osc.type = "square";
+    osc.frequency.setValueAtTime(220, now);
+    osc.frequency.exponentialRampToValueAtTime(160, now + 0.04);
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.06, now + 0.002);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.05);
+    osc.connect(gain);
+    gain.connect(this.toneBus);
+    osc.start(now);
+    osc.stop(now + 0.06);
+  }
+
+  playReloadStart() {
+    const context = this.ensureContext();
+    if (!context || !this.toneBus) return;
+    const toneBus = this.toneBus;
+    const now = context.currentTime;
+    [340, 260].forEach((frequency, index) => {
+      const osc = context.createOscillator();
+      osc.type = "square";
+      osc.frequency.setValueAtTime(frequency, now + index * 0.07);
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, now + index * 0.07);
+      gain.gain.exponentialRampToValueAtTime(0.06, now + index * 0.07 + 0.002);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + index * 0.07 + 0.05);
+      osc.connect(gain);
+      gain.connect(toneBus);
+      osc.start(now + index * 0.07);
+      osc.stop(now + index * 0.07 + 0.06);
+    });
+  }
+
+  playReloadEnd() {
+    const context = this.ensureContext();
+    if (!context || !this.toneBus) return;
+    const toneBus = this.toneBus;
+    const now = context.currentTime;
+    [250, 320, 410].forEach((frequency, index) => {
+      const osc = context.createOscillator();
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(frequency, now + index * 0.03);
+      const gain = context.createGain();
+      gain.gain.setValueAtTime(0.0001, now + index * 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.07, now + index * 0.03 + 0.002);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + index * 0.03 + 0.08);
+      osc.connect(gain);
+      gain.connect(toneBus);
+      osc.start(now + index * 0.03);
+      osc.stop(now + index * 0.03 + 0.09);
+    });
+  }
+
+  playGrenadeThrow() {
+    const context = this.ensureContext();
+    if (!context || !this.toneBus) return;
+    const now = context.currentTime;
+    const osc = context.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(180, now);
+    osc.frequency.exponentialRampToValueAtTime(110, now + 0.12);
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.07, now + 0.004);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
+    osc.connect(gain);
+    gain.connect(this.toneBus);
+    osc.start(now);
+    osc.stop(now + 0.16);
+    this.playNoiseBurst({ duration: 0.09, gain: 0.08, highpass: 260, lowpass: 2200 });
+  }
+
+  playExplosion() {
+    const context = this.ensureContext();
+    if (!context || !this.toneBus) return;
+    const now = context.currentTime;
+    const boom = context.createOscillator();
+    boom.type = "sine";
+    boom.frequency.setValueAtTime(90, now);
+    boom.frequency.exponentialRampToValueAtTime(34, now + 0.45);
+    const boomGain = context.createGain();
+    boomGain.gain.setValueAtTime(0.0001, now);
+    boomGain.gain.exponentialRampToValueAtTime(0.4, now + 0.01);
+    boomGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
+    boom.connect(boomGain);
+    boomGain.connect(this.toneBus);
+    boom.start(now);
+    boom.stop(now + 0.55);
+
+    this.playNoiseBurst({ duration: 0.42, gain: 0.36, highpass: 40, lowpass: 1600 });
+  }
+
+  playJump() {
+    const context = this.ensureContext();
+    if (!context || !this.toneBus) return;
+    const now = context.currentTime;
+    const osc = context.createOscillator();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(200, now);
+    osc.frequency.exponentialRampToValueAtTime(290, now + 0.08);
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.045, now + 0.003);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.1);
+    osc.connect(gain);
+    gain.connect(this.toneBus);
+    osc.start(now);
+    osc.stop(now + 0.12);
+  }
+
+  playFootstep(sprinting: boolean, stepSide: number) {
+    const context = this.ensureContext();
+    if (!context || !this.toneBus) return;
+    const now = context.currentTime;
+    const osc = context.createOscillator();
+    osc.type = "triangle";
+    const baseFrequency = sprinting ? 150 : 118;
+    osc.frequency.setValueAtTime(baseFrequency + stepSide * 12, now);
+    osc.frequency.exponentialRampToValueAtTime(sprinting ? 76 : 68, now + 0.07);
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(sprinting ? 0.09 : 0.06, now + 0.004);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.085);
+    osc.connect(gain);
+    gain.connect(this.toneBus);
+    osc.start(now);
+    osc.stop(now + 0.09);
+
+    this.playNoiseBurst({
+      duration: sprinting ? 0.08 : 0.065,
+      gain: sprinting ? 0.09 : 0.06,
+      highpass: 90,
+      lowpass: sprinting ? 760 : 620
+    });
+  }
+
+  private ensureContext() {
+    if (this.context) return this.context;
+    const AudioContextCtor = window.AudioContext;
+    if (!AudioContextCtor) return null;
+    this.context = new AudioContextCtor();
+    this.master = this.context.createGain();
+    this.master.gain.value = this.volume;
+    this.compressor = this.context.createDynamicsCompressor();
+    this.compressor.threshold.value = -18;
+    this.compressor.knee.value = 24;
+    this.compressor.ratio.value = 3;
+    this.compressor.attack.value = 0.003;
+    this.compressor.release.value = 0.18;
+    this.toneBus = this.context.createGain();
+    this.toneBus.gain.value = 1.05;
+    this.noiseBus = this.context.createGain();
+    this.noiseBus.gain.value = 1.18;
+    this.toneBus.connect(this.compressor);
+    this.noiseBus.connect(this.compressor);
+    this.compressor.connect(this.master);
+    this.master.connect(this.context.destination);
+    this.noiseBuffer = this.createNoiseBuffer(this.context);
+    return this.context;
+  }
+
+  private loadVolume() {
+    try {
+      const raw = window.localStorage.getItem(SoundEngine.storageKey);
+      if (!raw) return 0.85;
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed)) return 0.85;
+      return THREE.MathUtils.clamp(parsed, 0, 1);
+    } catch {
+      return 0.85;
+    }
+  }
+
+  private createNoiseBuffer(context: AudioContext) {
+    const buffer = context.createBuffer(1, context.sampleRate * 0.5, context.sampleRate);
+    const channel = buffer.getChannelData(0);
+    for (let index = 0; index < channel.length; index += 1) {
+      channel[index] = Math.random() * 2 - 1;
+    }
+    return buffer;
+  }
+
+  private playNoiseBurst(options: { duration: number; gain: number; highpass: number; lowpass: number }) {
+    const context = this.ensureContext();
+    if (!context || !this.noiseBus || !this.noiseBuffer) return;
+    const now = context.currentTime;
+    const source = context.createBufferSource();
+    source.buffer = this.noiseBuffer;
+    const highpass = context.createBiquadFilter();
+    highpass.type = "highpass";
+    highpass.frequency.value = options.highpass;
+    const lowpass = context.createBiquadFilter();
+    lowpass.type = "lowpass";
+    lowpass.frequency.value = options.lowpass;
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(options.gain, now + 0.004);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + options.duration);
+    source.connect(highpass);
+    highpass.connect(lowpass);
+    lowpass.connect(gain);
+    gain.connect(this.noiseBus);
+    source.start(now);
+    source.stop(now + options.duration + 0.02);
+  }
+}
+
 class SunlitPatrol {
   private readonly renderer = new THREE.WebGLRenderer({
     canvas,
@@ -205,6 +517,7 @@ class SunlitPatrol {
   private readonly tmpQuat = new THREE.Quaternion();
   private readonly muzzleFlashTexture = this.createMuzzleFlashTexture();
   private readonly smokeTexture = this.createSmokeTexture();
+  private readonly sound = new SoundEngine();
   private readonly player = new THREE.Group();
   private readonly weaponSocket = new THREE.Group();
   private readonly cameraTarget = new THREE.Vector3(0, 1.15, 0);
@@ -243,6 +556,8 @@ class SunlitPatrol {
   private grenadeCooldown = 0;
   private grenadeAmmo = 3;
   private crouchBlend = 0;
+  private footstepTimer = 0;
+  private footstepSide = 1;
   private debugEnabled = new URLSearchParams(window.location.search).has("debug");
   private readonly useRokokoRifleRig = urlParams.get("rig") === "rokoko";
   private shotSequence = 0;
@@ -259,6 +574,7 @@ class SunlitPatrol {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    this.syncVolumeUi();
 
     this.scene.background = palette.sky;
     this.scene.fog = new THREE.Fog(palette.sky, 46, 142);
@@ -591,20 +907,20 @@ class SunlitPatrol {
     });
 
     const targetSpawns = [
-      [-6, -24, targetLarge, 3, 1.12],
-      [6, -16, targetSmall, 2, 1.34],
-      [-4, 6, targetSmall, 2, 1.18],
-      [5, 20, targetLarge, 3, 0.96],
-      [-7, 38, targetSmall, 2, 1.42],
-      [7, 50, targetLarge, 3, 1.08]
+      [-6, -24, targetLarge, 3, 2.3, 0.62, 0.045],
+      [6, -16, targetSmall, 2, 2.55, 0.8, 0.058],
+      [-4, 6, targetSmall, 2, 2.2, 0.68, 0.048],
+      [5, 20, targetLarge, 3, 2.05, 0.56, 0.042],
+      [-7, 38, targetSmall, 2, 2.65, 0.86, 0.06],
+      [7, 50, targetLarge, 3, 2.18, 0.6, 0.044]
     ] as const;
 
-    targetSpawns.forEach(([x, z, asset, hp, scale], index) => {
+    targetSpawns.forEach(([x, z, asset, hp, scale, lift, hoverAmplitude], index) => {
       const root = asset.scene.clone(true);
       root.position.set(x, 0, z);
       root.rotation.y = index % 2 ? -0.25 : 0.25;
       root.scale.setScalar(scale);
-      this.placeObjectOnGround(root, 0.34 + index * 0.035);
+      this.placeObjectOnGround(root, lift);
       const meshes: THREE.Object3D[] = [];
       root.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
@@ -615,7 +931,18 @@ class SunlitPatrol {
           meshes.push(mesh);
         }
       });
-      const target: Target = { root, meshes, hp, maxHp: hp, wobble: index * 0.7, baseY: root.position.y, baseScale: scale, active: true };
+      const target: Target = {
+        root,
+        meshes,
+        hp,
+        maxHp: hp,
+        wobble: index * 0.7,
+        baseY: root.position.y,
+        baseScale: scale,
+        baseLift: lift,
+        hoverAmplitude,
+        active: true
+      };
       meshes.forEach((mesh) => this.targetByMesh.set(mesh, target));
       this.targets.push(target);
       this.scene.add(root);
@@ -756,6 +1083,7 @@ class SunlitPatrol {
     this.resize();
 
     window.addEventListener("keydown", (event) => {
+      this.sound.resume();
       this.keys.add(event.code);
       if (!event.repeat) this.logDebugEvent("key-down", { code: event.code, keys: this.describeKeys() });
       if (event.code === "KeyR") this.reload();
@@ -806,6 +1134,7 @@ class SunlitPatrol {
 
     canvas.addEventListener("mousedown", (event) => {
       if (event.button !== 0 || !this.isReady) return;
+      this.sound.resume();
       this.mouseAimActive = true;
       this.isFiring = true;
       this.logDebugEvent("canvas-fire", { button: event.button, pointerLocked: this.isPointerLocked });
@@ -835,6 +1164,7 @@ class SunlitPatrol {
     canvas.addEventListener("pointerdown", (event) => {
       if (event.button !== 2 || !this.isReady) return;
       event.preventDefault();
+      this.sound.resume();
       this.mouseAimActive = true;
       this.isAimingDownSights = true;
       if (!this.isPointerLocked) this.requestPointerLock();
@@ -843,6 +1173,7 @@ class SunlitPatrol {
 
     startButton.addEventListener("click", () => {
       if (!this.isReady) return;
+      this.sound.resume();
       this.mouseAimActive = true;
       this.logDebugEvent("start-click", { pointerLocked: this.isPointerLocked });
       this.requestPointerLock();
@@ -851,6 +1182,12 @@ class SunlitPatrol {
 
     controlsButton.addEventListener("click", () => {
       this.toggleControlsPanel();
+    });
+
+    volumeSlider.addEventListener("input", () => {
+      const normalized = Number(volumeSlider.value) / 100;
+      this.sound.setVolume(normalized);
+      this.syncVolumeUi();
     });
 
     window.addEventListener("blur", () => {
@@ -955,8 +1292,25 @@ class SunlitPatrol {
     const sprinting = !crouching && this.keys.has("ShiftLeft") && this.keys.has("KeyW");
     this.crouchBlend = THREE.MathUtils.damp(this.crouchBlend, crouching ? 1 : 0, 12, dt);
     this.player.scale.set(1, THREE.MathUtils.lerp(1, 0.82, this.crouchBlend), 1);
+    this.updateFootsteps(dt, moving, crouching, sprinting);
     if (this.jumpAnimTimer > 0) return;
     this.fadeTo(crouching ? (moving ? "CrouchWalk" : "CrouchIdle") : sprinting && moving ? "Sprint" : moving ? "Run" : "Idle");
+  }
+
+  private updateFootsteps(dt: number, moving: boolean, crouching: boolean, sprinting: boolean) {
+    if (!moving || crouching || this.jumpAnimTimer > 0) {
+      this.footstepTimer = 0;
+      return;
+    }
+
+    const speed = this.playerVelocity.length();
+    const interval = sprinting ? 0.24 : speed > 8 ? 0.29 : speed > 5.5 ? 0.36 : 0.42;
+    this.footstepTimer -= dt;
+    if (this.footstepTimer > 0) return;
+
+    this.sound.playFootstep(sprinting, this.footstepSide);
+    this.footstepSide *= -1;
+    this.footstepTimer = interval;
   }
 
   private updateWeaponPose(dt: number) {
@@ -1028,7 +1382,7 @@ class SunlitPatrol {
       if (!target.active) return;
       activeCount += 1;
       target.wobble += dt;
-      target.root.position.y = target.baseY + Math.sin(target.wobble * 2.4) * 0.035;
+      target.root.position.y = target.baseY + Math.sin(target.wobble * 2.4) * target.hoverAmplitude;
       target.root.rotation.y += Math.sin(target.wobble) * 0.002;
     });
 
@@ -1043,7 +1397,7 @@ class SunlitPatrol {
         target.hp = target.maxHp;
         target.root.visible = true;
         target.root.scale.setScalar(target.baseScale);
-        this.placeObjectOnGround(target.root, 0.34 + index * 0.035);
+        this.placeObjectOnGround(target.root, target.baseLift);
         target.baseY = target.root.position.y;
       });
       this.setStatus("New wave");
@@ -1176,6 +1530,7 @@ class SunlitPatrol {
 
   private throwGrenade() {
     if (this.reloadTimer > 0 || this.grenadeCooldown > 0 || this.grenadeAmmo <= 0 || !this.grenadeTemplate) return;
+    this.sound.playGrenadeThrow();
     this.grenadeAmmo -= 1;
     this.grenadeCooldown = 0.85;
     this.fadeTo("GrenadeThrow", true);
@@ -1222,6 +1577,7 @@ class SunlitPatrol {
 
   private explodeGrenade(position: THREE.Vector3) {
     this.setStatus("Grenade blast");
+    this.sound.playExplosion();
     this.spawnExplosion(position);
     const blastRadius = 4.4;
     this.targets.forEach((target) => {
@@ -1253,6 +1609,7 @@ class SunlitPatrol {
   private shoot() {
     if (this.reloadTimer > 0 || this.shotCooldown > 0) return;
     if (this.ammo <= 0) {
+      this.sound.playEmpty();
       this.reload();
       return;
     }
@@ -1264,6 +1621,7 @@ class SunlitPatrol {
     this.fadeTo("Shoot_OneHanded", true);
     this.playFirstPersonFireAnimation();
     this.flashCrosshair();
+    this.sound.playShot(this.cameraMode === "first", this.isAimingDownSights);
 
     const muzzle = this.getMuzzleWorldPosition();
     const shot = this.resolveRifleShot(muzzle);
@@ -1276,6 +1634,7 @@ class SunlitPatrol {
     if (shot.target) {
       this.damageTarget(shot.target, shot.point);
     } else {
+      this.sound.playDryImpact();
       this.spawnImpact(shot.point, palette.cream);
       this.setStatus("Range impact");
     }
@@ -1531,8 +1890,15 @@ class SunlitPatrol {
     controlsPanel.classList.toggle("active", active);
     controlsPanel.setAttribute("aria-hidden", active ? "false" : "true");
     controlsButton.setAttribute("aria-expanded", active ? "true" : "false");
-    controlsButton.setAttribute("aria-label", active ? "Hide controls" : "Show controls");
+    controlsButton.setAttribute("aria-label", active ? "Hide controls (H)" : "Show controls (H)");
+    controlsButton.setAttribute("title", active ? "Hide controls (H)" : "Controls (H)");
     this.logDebugEvent("controls-panel", { active });
+  }
+
+  private syncVolumeUi() {
+    const percent = Math.round(this.sound.getVolume() * 100);
+    volumeSlider.value = String(percent);
+    volumeValueEl.textContent = `${percent}%`;
   }
 
   private logShotTelemetry(
@@ -2007,6 +2373,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     this.score += 10;
     target.root.scale.multiplyScalar(0.92);
     this.spawnImpact(point, target.hp <= 0 ? palette.coral : palette.teal);
+    this.sound.playHit(target.hp <= 0);
 
     if (target.hp <= 0) {
       target.active = false;
@@ -2301,6 +2668,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
 
   private reload() {
     if (this.ammo === 12 || this.reloadTimer > 0) return;
+    this.sound.playReloadStart();
     this.reloadTimer = 0.8;
     this.reloadAnimTimer = 0.8;
     this.isFiring = false;
@@ -2308,6 +2676,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     this.fadeTo("Reload", true);
     window.setTimeout(() => {
       this.ammo = 12;
+      this.sound.playReloadEnd();
       this.updateHud();
       this.setStatus("Reloaded");
     }, 800);
@@ -2317,6 +2686,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
 
   private jump() {
     if (this.jumpAnimTimer > 0 || this.reloadTimer > 0) return;
+    this.sound.playJump();
     this.jumpAnimTimer = 0.58;
     this.fadeTo("Jump", true);
     this.setStatus("Jump");

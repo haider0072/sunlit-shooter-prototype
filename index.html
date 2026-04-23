@@ -29,11 +29,21 @@
       <footer class="hud hud-bottom">
         <div id="status">Ready</div>
         <div class="hud-actions">
-          <button id="controlsButton" class="icon-button" type="button" aria-label="Show controls" aria-expanded="false" aria-controls="controlsPanel" title="Controls">?</button>
+          <button id="controlsButton" class="icon-button controls-toggle" type="button" aria-label="Show controls (H)" aria-expanded="false" aria-controls="controlsPanel" title="Controls (H)">
+            <span class="controls-toggle-icon">?</span>
+            <span class="controls-toggle-shortcut">H</span>
+          </button>
           <button id="startButton" type="button">Start</button>
         </div>
       </footer>
       <section id="controlsPanel" class="controls-panel" aria-hidden="true">
+        <div class="controls-audio">
+          <div class="controls-audio-meta">
+            <strong>Volume</strong>
+            <span id="volumeValue">85%</span>
+          </div>
+          <input id="volumeSlider" type="range" min="0" max="100" step="1" value="85" aria-label="Game volume" />
+        </div>
         <div class="controls-grid">
           <span>WASD</span><b>Move</b>
           <span>Mouse</span><b>Aim</b>

@@ -194,6 +194,29 @@ body {
   box-shadow: 3px 4px 0 var(--shadow);
 }
 
+.controls-toggle {
+  position: relative;
+  overflow: hidden;
+}
+
+.controls-toggle-icon {
+  line-height: 1;
+}
+
+.controls-toggle-shortcut {
+  position: absolute;
+  right: 5px;
+  bottom: 4px;
+  min-width: 13px;
+  padding: 1px 3px;
+  border-radius: 4px;
+  background: rgba(49, 64, 72, 0.12);
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1;
+}
+
 .controls-panel {
   position: fixed;
   z-index: 9;
@@ -214,6 +237,41 @@ body {
 
 .controls-panel.active {
   display: block;
+}
+
+.controls-audio {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(49, 64, 72, 0.08);
+}
+
+.controls-audio-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.controls-audio-meta strong {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.controls-audio-meta span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.controls-audio input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent-2);
+  cursor: pointer;
 }
 
 .controls-grid {
