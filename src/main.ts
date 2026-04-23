@@ -699,12 +699,28 @@ class SunlitPatrol {
     });
   }
 
+  private resizeRaf = 0;
   private resize() {
-    const width = window.innerWidth;
-    const height = window.innerHeight;
-    this.camera.aspect = width / height;
-    this.camera.updateProjectionMatrix();
-    this.renderer.setSize(width, height, false);
+    if (this.resizeRaf !== 0) return;
+    this.resizeRaf = window.requestAnimationFrame(() => {
+      this.resizeRaf = 0;
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      this.camera.aspect = width / height;
+      this.camera.updateProjectionMatrix();
+      this.renderer.setSize(width, height, false);
+    });
+  }
+
+  dispose() {
+    if (this.resizeRaf !== 0) {
+      window.cancelAnimationFrame(this.resizeRaf);
+      this.resizeRaf = 0;
+    }
+    this.renderer.setAnimationLoop(null);
+    this.input.dispose();
+    this.animation.dispose();
+    this.renderer.dispose();
   }
 
   private applyMouseLook(deltaX: number, deltaY: number) {
