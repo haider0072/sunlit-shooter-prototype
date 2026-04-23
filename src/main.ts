@@ -22,6 +22,7 @@ type Target = {
   hp: number;
   maxHp: number;
   wobble: number;
+  baseY: number;
   active: boolean;
 };
 
@@ -600,6 +601,7 @@ class SunlitPatrol {
       root.position.set(x, 0, z);
       root.rotation.y = index % 2 ? -0.25 : 0.25;
       root.scale.setScalar(hp === 3 ? 1.25 : 1);
+      this.placeObjectOnGround(root);
       const meshes: THREE.Object3D[] = [];
       root.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
@@ -610,7 +612,7 @@ class SunlitPatrol {
           meshes.push(mesh);
         }
       });
-      const target: Target = { root, meshes, hp, maxHp: hp, wobble: index * 0.7, active: true };
+      const target: Target = { root, meshes, hp, maxHp: hp, wobble: index * 0.7, baseY: root.position.y, active: true };
       meshes.forEach((mesh) => this.targetByMesh.set(mesh, target));
       this.targets.push(target);
       this.scene.add(root);
@@ -625,6 +627,7 @@ class SunlitPatrol {
       const crate = (asset as GLTF).scene.clone(true);
       crate.position.set(x as number, 0, z as number);
       crate.rotation.y = Math.random() * Math.PI;
+      this.placeObjectOnGround(crate);
       crate.traverse((child) => {
         if ((child as THREE.Mesh).isMesh) {
           const mesh = child as THREE.Mesh;
@@ -635,6 +638,13 @@ class SunlitPatrol {
       });
       this.scene.add(crate);
     });
+  }
+
+  private placeObjectOnGround(object: THREE.Object3D, groundY = 0.08) {
+    object.updateWorldMatrix(true, true);
+    const bounds = new THREE.Box3().setFromObject(object);
+    if (!Number.isFinite(bounds.min.y)) return;
+    object.position.y += groundY - bounds.min.y;
   }
 
   private tuneMaterial(material: THREE.Material | THREE.Material[]) {
@@ -1008,7 +1018,7 @@ class SunlitPatrol {
       if (!target.active) return;
       activeCount += 1;
       target.wobble += dt;
-      target.root.position.y = Math.sin(target.wobble * 2.4) * 0.06;
+      target.root.position.y = target.baseY + Math.sin(target.wobble * 2.4) * 0.035;
       target.root.rotation.y += Math.sin(target.wobble) * 0.002;
     });
 
@@ -1023,6 +1033,8 @@ class SunlitPatrol {
         target.hp = target.maxHp;
         target.root.visible = true;
         target.root.scale.setScalar(target.maxHp === 3 ? 1.25 : 1);
+        this.placeObjectOnGround(target.root);
+        target.baseY = target.root.position.y;
       });
       this.setStatus("New wave");
     }
