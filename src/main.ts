@@ -8,6 +8,8 @@ import {
   cameraTuning,
   fallbackWeaponSocket,
   oneShotActions,
+  projectileTuning,
+  rifleTuning,
   rokokoRifleActionClipAliases,
   runtimeAssets,
   thirdPersonWeaponSocket,
@@ -80,23 +82,6 @@ type PreShotState = {
   cooldownBefore: number;
   reloadBefore: number;
   statusBefore: string;
-};
-
-const projectileTuning = {
-  speed: 72,
-  maxDistance: 92
-};
-
-const rifleTuning = {
-  damage: 1,
-  range: 96,
-  cooldown: 0.105,
-  hipSpread: 0.035,
-  movingSpread: 0.12,
-  recoilPitch: 0.006,
-  recoilYaw: 0.004,
-  visualRecoilPitch: 0.014,
-  visualRecoilYaw: 0.005
 };
 
 function requiredElement<T extends HTMLElement>(selector: string) {
