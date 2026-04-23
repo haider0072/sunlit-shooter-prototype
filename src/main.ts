@@ -17,6 +17,7 @@ import {
 } from "./game/config";
 import { AudioEngine } from "./game/AudioEngine";
 import { HUDManager } from "./game/HUDManager";
+import { InputManager } from "./game/InputManager";
 import type {
   AimTrace,
   CameraMode,
@@ -117,7 +118,7 @@ class SunlitPatrol {
   private readonly objLoader = new OBJLoader();
   private readonly raycaster = new THREE.Raycaster();
   private readonly groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.08);
-  private readonly keys = new Set<string>();
+  private readonly input = new InputManager(canvas);
   private readonly targetByMesh = new Map<THREE.Object3D, Target>();
   private readonly targets: Target[] = [];
   private readonly projectiles: Projectile[] = [];
@@ -145,10 +146,6 @@ class SunlitPatrol {
   private grenadeTemplate: THREE.Group | null = null;
   private rightHandBone: THREE.Object3D | null = null;
   private isReady = false;
-  private isPointerLocked = false;
-  private mouseAimActive = false;
-  private isFiring = false;
-  private isAimingDownSights = false;
   private jumpAnimTimer = 0;
   private yaw = 0;
   private pitch = -0.08;
@@ -177,7 +174,6 @@ class SunlitPatrol {
   private debugHistory: string[] = [];
   private debugEvents: string[] = [];
   private debugShotRecords: unknown[] = [];
-  private lastMouseDelta = { x: 0, y: 0, time: 0 };
   private cameraMode: CameraMode = "third";
 
   constructor() {
@@ -690,104 +686,68 @@ class SunlitPatrol {
   }
 
   private bindEvents() {
-    window.addEventListener("resize", () => this.resize());
     this.resize();
-
-    window.addEventListener("keydown", (event) => {
-      this.sound.resume();
-      this.keys.add(event.code);
-      if (!event.repeat) this.logDebugEvent("key-down", { code: event.code, keys: this.describeKeys() });
-      if (event.code === "KeyR") this.reload();
-      if (event.code === "KeyG" && !event.repeat) this.throwGrenade();
-      if (event.code === "F3") {
-        event.preventDefault();
-        this.setDebugEnabled(!this.debugEnabled);
-      }
-      if (event.code === "KeyV" && !event.repeat) {
-        this.toggleCameraMode();
-      }
-      if (event.code === "KeyH" && !event.repeat) {
-        this.toggleControlsPanel();
-      }
-      if (event.code === "Space") {
-        event.preventDefault();
-        this.jump();
-      }
-    });
-    window.addEventListener("keyup", (event) => {
-      this.keys.delete(event.code);
-      this.logDebugEvent("key-up", { code: event.code, keys: this.describeKeys() });
-    });
-
-    document.addEventListener("pointerlockchange", () => {
-      this.isPointerLocked = document.pointerLockElement === canvas;
-      hud.setStartButtonText(this.isPointerLocked ? "Live" : "Start");
-      if (this.isPointerLocked) this.mouseAimActive = true;
-      this.logDebugEvent("pointer-lock", {
-        locked: this.isPointerLocked,
-        pointerLockElement: document.pointerLockElement === canvas ? "canvas" : document.pointerLockElement?.nodeName ?? null
-      });
-    });
-
-    window.addEventListener("mousemove", (event) => {
-      if (!this.isPointerLocked && !this.mouseAimActive) return;
-      this.lastMouseDelta = { x: event.movementX, y: event.movementY, time: rounded(performance.now(), 1) };
-      if (this.debugEnabled && (Math.abs(event.movementX) > 8 || Math.abs(event.movementY) > 8)) {
-        this.logDebugEvent("mouse-look", {
-          dx: event.movementX,
-          dy: event.movementY,
-          yawDeg: rounded(THREE.MathUtils.radToDeg(this.yaw), 2),
-          pitchDeg: rounded(THREE.MathUtils.radToDeg(this.pitch), 2)
+    this.input.bind({
+      isReady: () => this.isReady,
+      onResize: () => this.resize(),
+      onAnyKeyDown: (event) => {
+        this.sound.resume();
+        if (!event.repeat) this.logDebugEvent("key-down", { code: event.code, keys: this.input.describeKeys() });
+      },
+      onKeyUp: (event) => {
+        this.logDebugEvent("key-up", { code: event.code, keys: this.input.describeKeys() });
+      },
+      onReload: () => this.reload(),
+      onGrenade: () => this.throwGrenade(),
+      onJump: () => this.jump(),
+      onToggleDebug: () => this.setDebugEnabled(!this.debugEnabled),
+      onToggleCamera: () => this.toggleCameraMode(),
+      onToggleControls: () => this.toggleControlsPanel(),
+      onMouseLook: (dx, dy) => {
+        if (this.debugEnabled && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+          this.logDebugEvent("mouse-look", {
+            dx,
+            dy,
+            yawDeg: rounded(THREE.MathUtils.radToDeg(this.yaw), 2),
+            pitchDeg: rounded(THREE.MathUtils.radToDeg(this.pitch), 2)
+          });
+        }
+        this.applyMouseLook(dx, dy);
+      },
+      onFireStart: (event) => {
+        this.sound.resume();
+        this.logDebugEvent("canvas-fire", { button: event.button, pointerLocked: this.input.isPointerLocked });
+        if (!this.input.isPointerLocked) this.input.requestPointerLock();
+        this.shoot();
+      },
+      onAdsStart: () => {
+        this.sound.resume();
+        if (!this.input.isPointerLocked) this.input.requestPointerLock();
+        this.logDebugEvent("ads-start", {
+          pointerLocked: this.input.isPointerLocked,
+          cameraMode: this.cameraMode
+        });
+      },
+      onPointerLockChange: (locked, element) => {
+        hud.setStartButtonText(locked ? "Live" : "Start");
+        this.logDebugEvent("pointer-lock", {
+          locked,
+          pointerLockElement: element === canvas ? "canvas" : element?.nodeName ?? null
+        });
+      },
+      onFocusLost: (reason) => {
+        this.logDebugEvent(reason === "blur" ? "window-blur" : "document-hidden", {
+          keys: this.input.describeKeys()
         });
       }
-      this.applyMouseLook(event.movementX, event.movementY);
-    });
-
-    canvas.addEventListener("mousedown", (event) => {
-      if (event.button !== 0 || !this.isReady) return;
-      this.sound.resume();
-      this.mouseAimActive = true;
-      this.isFiring = true;
-      this.logDebugEvent("canvas-fire", { button: event.button, pointerLocked: this.isPointerLocked });
-      if (!this.isPointerLocked) {
-        this.requestPointerLock();
-      }
-      this.shoot();
-    });
-    window.addEventListener("mouseup", (event) => {
-      if (event.button === 0) this.isFiring = false;
-      if (event.button === 2) this.isAimingDownSights = false;
-    });
-    canvas.addEventListener("pointerup", (event) => {
-      if (event.button === 0) this.isFiring = false;
-      if (event.button === 2) this.isAimingDownSights = false;
-    });
-    canvas.addEventListener("pointercancel", () => {
-      this.isFiring = false;
-      this.isAimingDownSights = false;
-    });
-    window.addEventListener("mouseleave", () => {
-      this.isFiring = false;
-      this.isAimingDownSights = false;
-    });
-
-    canvas.addEventListener("contextmenu", (event) => event.preventDefault());
-    canvas.addEventListener("pointerdown", (event) => {
-      if (event.button !== 2 || !this.isReady) return;
-      event.preventDefault();
-      this.sound.resume();
-      this.mouseAimActive = true;
-      this.isAimingDownSights = true;
-      if (!this.isPointerLocked) this.requestPointerLock();
-      this.logDebugEvent("ads-start", { pointerLocked: this.isPointerLocked, cameraMode: this.cameraMode });
     });
 
     hud.onStartClick(() => {
       if (!this.isReady) return;
       this.sound.resume();
-      this.mouseAimActive = true;
-      this.logDebugEvent("start-click", { pointerLocked: this.isPointerLocked });
-      this.requestPointerLock();
+      this.input.mouseAimActive = true;
+      this.logDebugEvent("start-click", { pointerLocked: this.input.isPointerLocked });
+      this.input.requestPointerLock();
       this.setStatus("Mouse aim active");
     });
 
@@ -799,21 +759,6 @@ class SunlitPatrol {
       this.sound.setVolume(normalized);
       this.syncVolumeUi();
     });
-
-    window.addEventListener("blur", () => {
-      this.keys.clear();
-      this.isFiring = false;
-      this.isAimingDownSights = false;
-      this.logDebugEvent("window-blur", { keys: this.describeKeys() });
-    });
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) {
-        this.keys.clear();
-        this.isFiring = false;
-        this.isAimingDownSights = false;
-        this.logDebugEvent("document-hidden", { keys: this.describeKeys() });
-      }
-    });
   }
 
   private resize() {
@@ -822,17 +767,6 @@ class SunlitPatrol {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height, false);
-  }
-
-  private requestPointerLock() {
-    try {
-      const lock = canvas.requestPointerLock();
-      if (lock instanceof Promise) {
-        lock.catch(() => undefined);
-      }
-    } catch {
-      // Some automated or embedded browsers reject pointer lock; keyboard controls still work.
-    }
   }
 
   private applyMouseLook(deltaX: number, deltaY: number) {
@@ -857,7 +791,7 @@ class SunlitPatrol {
     this.cameraRecoilYaw = THREE.MathUtils.damp(this.cameraRecoilYaw, 0, 16, dt);
     this.weaponKick = THREE.MathUtils.damp(this.weaponKick, 0, 18, dt);
     this.weaponKickSide = THREE.MathUtils.damp(this.weaponKickSide, 0, 14, dt);
-    if (this.isFiring) this.shoot();
+    if (this.input.isFiring) this.shoot();
 
     this.updatePlayer(dt);
     this.updateWeaponPose(dt);
@@ -876,16 +810,16 @@ class SunlitPatrol {
   }
 
   private updatePlayer(dt: number) {
-    const forward = Number(this.keys.has("KeyW") || this.keys.has("ArrowUp")) - Number(this.keys.has("KeyS") || this.keys.has("ArrowDown"));
-    const strafe = Number(this.keys.has("KeyD") || this.keys.has("ArrowRight")) - Number(this.keys.has("KeyA") || this.keys.has("ArrowLeft"));
+    const forward = Number(this.input.isKeyDown("KeyW") || this.input.isKeyDown("ArrowUp")) - Number(this.input.isKeyDown("KeyS") || this.input.isKeyDown("ArrowDown"));
+    const strafe = Number(this.input.isKeyDown("KeyD") || this.input.isKeyDown("ArrowRight")) - Number(this.input.isKeyDown("KeyA") || this.input.isKeyDown("ArrowLeft"));
 
     if (forward !== 0 || strafe !== 0) {
       const sin = Math.sin(this.yaw);
       const cos = Math.cos(this.yaw);
       this.tmpVec.set(sin * forward - cos * strafe, 0, cos * forward + sin * strafe).normalize();
       const movingBackward = forward < 0 && strafe === 0;
-      const crouching = this.keys.has("KeyC") || this.keys.has("ControlLeft") || this.keys.has("ControlRight");
-      const sprinting = !crouching && this.keys.has("ShiftLeft") && forward > 0;
+      const crouching = this.input.isKeyDown("KeyC") || this.input.isKeyDown("ControlLeft") || this.input.isKeyDown("ControlRight");
+      const sprinting = !crouching && this.input.isKeyDown("ShiftLeft") && forward > 0;
       this.playerVelocity.copy(this.tmpVec).multiplyScalar(crouching ? 2.7 : sprinting ? 9.2 : movingBackward ? 4.6 : 7.4);
     } else {
       this.playerVelocity.multiplyScalar(Math.pow(0.002, dt));
@@ -898,8 +832,8 @@ class SunlitPatrol {
     this.player.rotation.y = lerpAngle(this.player.rotation.y, this.yaw, 1 - Math.pow(0.001, dt));
 
     const moving = this.playerVelocity.lengthSq() > 0.4;
-    const crouching = this.keys.has("KeyC") || this.keys.has("ControlLeft") || this.keys.has("ControlRight");
-    const sprinting = !crouching && this.keys.has("ShiftLeft") && this.keys.has("KeyW");
+    const crouching = this.input.isKeyDown("KeyC") || this.input.isKeyDown("ControlLeft") || this.input.isKeyDown("ControlRight");
+    const sprinting = !crouching && this.input.isKeyDown("ShiftLeft") && this.input.isKeyDown("KeyW");
     this.crouchBlend = THREE.MathUtils.damp(this.crouchBlend, crouching ? 1 : 0, 12, dt);
     this.player.scale.set(1, THREE.MathUtils.lerp(1, 0.82, this.crouchBlend), 1);
     this.updateFootsteps(dt, moving, crouching, sprinting);
@@ -932,7 +866,7 @@ class SunlitPatrol {
       const moveSway = this.playerVelocity.lengthSq() > 0.4 ? 0.018 : 0.006;
       const fpSwayX = Math.sin(performance.now() * 0.004) * moveSway;
       const fpSwayY = Math.cos(performance.now() * 0.005) * moveSway;
-      const ads = this.cameraMode === "first" && this.isAimingDownSights ? 1 : 0;
+      const ads = this.cameraMode === "first" && this.input.isAimingDownSights ? 1 : 0;
       const reloadT = this.reloadAnimTimer > 0 ? 1 - Math.abs(this.reloadAnimTimer / 0.8 - 0.5) * 2 : 0;
       const baseX = THREE.MathUtils.lerp(0.72, 0.05, ads);
       const baseY = THREE.MathUtils.lerp(-0.95, -0.66, ads);
@@ -964,7 +898,7 @@ class SunlitPatrol {
         this.camera.position.y + forward.y * 10,
         this.camera.position.z + forward.z * 10
       );
-      const targetFov = this.isAimingDownSights ? cameraTuning.firstPerson.adsFov : cameraTuning.firstPerson.hipFov;
+      const targetFov = this.input.isAimingDownSights ? cameraTuning.firstPerson.adsFov : cameraTuning.firstPerson.hipFov;
       this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 10, dt);
       this.camera.updateProjectionMatrix();
       return;
@@ -1144,7 +1078,7 @@ class SunlitPatrol {
     this.grenadeAmmo -= 1;
     this.grenadeCooldown = 0.85;
     this.fadeTo("GrenadeThrow", true);
-    this.isFiring = false;
+    this.input.isFiring = false;
 
     const aim = this.getAimDirection(0.035, 0);
     const forward = new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw)).normalize();
@@ -1231,7 +1165,7 @@ class SunlitPatrol {
     this.fadeTo("Shoot_OneHanded", true);
     this.playFirstPersonFireAnimation();
     this.flashCrosshair();
-    this.sound.playShot(this.cameraMode === "first", this.isAimingDownSights);
+    this.sound.playShot(this.cameraMode === "first", this.input.isAimingDownSights);
 
     const muzzle = this.getMuzzleWorldPosition();
     const shot = this.resolveRifleShot(muzzle);
@@ -1543,11 +1477,11 @@ class SunlitPatrol {
       pitchDeg: rounded(THREE.MathUtils.radToDeg(this.pitch), 2),
       cameraRecoilPitchDeg: rounded(THREE.MathUtils.radToDeg(this.cameraRecoilPitch), 2),
       cameraRecoilYawDeg: rounded(THREE.MathUtils.radToDeg(this.cameraRecoilYaw), 2),
-      pointerLocked: this.isPointerLocked,
-      mouseAimActive: this.mouseAimActive,
-      ads: this.isAimingDownSights,
+      pointerLocked: this.input.isPointerLocked,
+      mouseAimActive: this.input.mouseAimActive,
+      ads: this.input.isAimingDownSights,
       cameraMode: this.cameraMode,
-      keys: Array.from(this.keys).sort().join(","),
+      keys: this.input.describeKeys(),
       moving: shot.moving,
       spreadDeg: rounded(shot.spread, 3),
       velocity: this.describeVector(this.playerVelocity),
@@ -1683,12 +1617,12 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
       frame: this.frameSequence,
       time: rounded(performance.now(), 1),
       ready: this.isReady,
-      pointerLocked: this.isPointerLocked,
-      mouseAimActive: this.mouseAimActive,
-      ads: this.isAimingDownSights,
+      pointerLocked: this.input.isPointerLocked,
+      mouseAimActive: this.input.mouseAimActive,
+      ads: this.input.isAimingDownSights,
       cameraMode: this.cameraMode,
-      keys: this.describeKeys(),
-      lastMouseDelta: this.lastMouseDelta,
+      keys: this.input.describeKeys(),
+      lastMouseDelta: this.input.lastMouseDelta,
       viewport: this.describeViewport(),
       yawDeg: rounded(THREE.MathUtils.radToDeg(this.yaw), 2),
       pitchDeg: rounded(THREE.MathUtils.radToDeg(this.pitch), 2),
@@ -1731,10 +1665,6 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
         triangles: this.renderer.info.render.triangles
       }
     };
-  }
-
-  private describeKeys() {
-    return Array.from(this.keys).sort().join(",");
   }
 
   private describeViewport() {
@@ -2273,8 +2203,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     this.sound.playReloadStart();
     this.reloadTimer = 0.8;
     this.reloadAnimTimer = 0.8;
-    this.isFiring = false;
-    this.isAimingDownSights = false;
+    this.input.releaseAim();
     this.fadeTo("Reload", true);
     window.setTimeout(() => {
       this.ammo = 12;
