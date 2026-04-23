@@ -16,6 +16,7 @@ import {
   type ActionName
 } from "./game/config";
 import { AudioEngine } from "./game/AudioEngine";
+import { HUDManager } from "./game/HUDManager";
 import type {
   AimTrace,
   CameraMode,
@@ -33,19 +34,8 @@ function requiredElement<T extends HTMLElement>(selector: string) {
 }
 
 const canvas = requiredElement<HTMLCanvasElement>("#game");
-const loaderEl = requiredElement<HTMLDivElement>("#loader");
-const startButton = requiredElement<HTMLButtonElement>("#startButton");
-const scoreEl = requiredElement<HTMLSpanElement>("#score");
-const ammoEl = requiredElement<HTMLSpanElement>("#ammo");
-const healthEl = requiredElement<HTMLSpanElement>("#health");
-const statusEl = requiredElement<HTMLDivElement>("#status");
-const objectiveEl = requiredElement<HTMLSpanElement>("#objective");
-const crosshairEl = requiredElement<HTMLDivElement>(".crosshair");
 const debugPanelEl = requiredElement<HTMLPreElement>("#debugPanel");
-const controlsButton = requiredElement<HTMLButtonElement>("#controlsButton");
-const controlsPanel = requiredElement<HTMLElement>("#controlsPanel");
-const volumeSlider = requiredElement<HTMLInputElement>("#volumeSlider");
-const volumeValueEl = requiredElement<HTMLSpanElement>("#volumeValue");
+const hud = new HUDManager();
 const urlParams = new URLSearchParams(window.location.search);
 
 const palette = {
@@ -263,7 +253,7 @@ class SunlitPatrol {
     await this.loadPlayer();
     await this.loadWeaponAndTargets();
     this.isReady = true;
-    loaderEl.classList.add("hidden");
+    hud.hideLoader();
     this.setStatus("Range online");
     this.setDebugEnabled(this.debugEnabled);
     this.updateHud();
@@ -731,7 +721,7 @@ class SunlitPatrol {
 
     document.addEventListener("pointerlockchange", () => {
       this.isPointerLocked = document.pointerLockElement === canvas;
-      startButton.textContent = this.isPointerLocked ? "Live" : "Start";
+      hud.setStartButtonText(this.isPointerLocked ? "Live" : "Start");
       if (this.isPointerLocked) this.mouseAimActive = true;
       this.logDebugEvent("pointer-lock", {
         locked: this.isPointerLocked,
@@ -792,7 +782,7 @@ class SunlitPatrol {
       this.logDebugEvent("ads-start", { pointerLocked: this.isPointerLocked, cameraMode: this.cameraMode });
     });
 
-    startButton.addEventListener("click", () => {
+    hud.onStartClick(() => {
       if (!this.isReady) return;
       this.sound.resume();
       this.mouseAimActive = true;
@@ -801,12 +791,11 @@ class SunlitPatrol {
       this.setStatus("Mouse aim active");
     });
 
-    controlsButton.addEventListener("click", () => {
+    hud.onControlsClick(() => {
       this.toggleControlsPanel();
     });
 
-    volumeSlider.addEventListener("input", () => {
-      const normalized = Number(volumeSlider.value) / 100;
+    hud.onVolumeInput((normalized) => {
       this.sound.setVolume(normalized);
       this.syncVolumeUi();
     });
@@ -1024,7 +1013,7 @@ class SunlitPatrol {
       this.setStatus("New wave");
     }
 
-    objectiveEl.textContent = `${activeCount} targets`;
+    hud.setObjective(`${activeCount} targets`);
   }
 
   private updateEffects(dt: number) {
@@ -1466,7 +1455,7 @@ class SunlitPatrol {
       ammoBefore: this.ammo,
       cooldownBefore: rounded(this.shotCooldown, 4),
       reloadBefore: rounded(this.reloadTimer, 4),
-      statusBefore: statusEl.textContent || ""
+      statusBefore: hud.getStatus()
     };
   }
 
@@ -1507,19 +1496,12 @@ class SunlitPatrol {
   }
 
   private toggleControlsPanel(force?: boolean) {
-    const active = force ?? !controlsPanel.classList.contains("active");
-    controlsPanel.classList.toggle("active", active);
-    controlsPanel.setAttribute("aria-hidden", active ? "false" : "true");
-    controlsButton.setAttribute("aria-expanded", active ? "true" : "false");
-    controlsButton.setAttribute("aria-label", active ? "Hide controls (H)" : "Show controls (H)");
-    controlsButton.setAttribute("title", active ? "Hide controls (H)" : "Controls (H)");
+    const active = hud.toggleControls(force);
     this.logDebugEvent("controls-panel", { active });
   }
 
   private syncVolumeUi() {
-    const percent = Math.round(this.sound.getVolume() * 100);
-    volumeSlider.value = String(percent);
-    volumeValueEl.textContent = `${percent}%`;
+    hud.setVolumeUi(Math.round(this.sound.getVolume() * 100));
   }
 
   private logShotTelemetry(
@@ -1720,7 +1702,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
       reloadAnimTimer: rounded(this.reloadAnimTimer, 4),
       grenadeAmmo: this.grenadeAmmo,
       grenadeCooldown: rounded(this.grenadeCooldown, 4),
-      status: statusEl.textContent || "",
+      status: hud.getStatus(),
       activeAction: this.activeAction,
       velocity: this.describeVector(this.playerVelocity),
       player: this.describeObject(this.player),
@@ -2004,8 +1986,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     } else {
       this.setStatus("Hit confirmed");
     }
-    crosshairEl.classList.remove("hit");
-    window.requestAnimationFrame(() => crosshairEl.classList.add("hit"));
+    hud.flashCrosshairHit();
     this.updateHud();
   }
 
@@ -2333,10 +2314,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
   }
 
   private flashCrosshair() {
-    crosshairEl.classList.remove("flash");
-    window.requestAnimationFrame(() => {
-      crosshairEl.classList.add("flash");
-    });
+    hud.flashCrosshairMiss();
   }
 
   private fadeTo(name: ActionName, force = false) {
@@ -2354,19 +2332,18 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
   }
 
   private setStatus(message: string) {
-    statusEl.textContent = message;
+    hud.setStatus(message);
   }
 
   private updateHud() {
-    scoreEl.textContent = `${this.score}`;
-    ammoEl.textContent = this.reloadTimer > 0 ? "..." : `${this.ammo} / 12  G:${this.grenadeAmmo}`;
-    healthEl.textContent = `${this.health}`;
+    hud.setScore(this.score);
+    hud.setAmmo(this.ammo, this.reloadTimer > 0, this.grenadeAmmo);
+    hud.setHealth(this.health);
   }
 }
 
 const game = new SunlitPatrol();
 game.init().catch((error) => {
   console.error(error);
-  loaderEl.classList.add("hidden");
-  statusEl.textContent = "Load failed";
+  hud.showLoadError("Load failed");
 });
