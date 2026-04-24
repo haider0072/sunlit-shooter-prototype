@@ -1265,13 +1265,36 @@ class SunlitPatrol {
 
   private raycastRemotePlayers(raycaster: THREE.Raycaster): { peerId: string; point: THREE.Vector3; distance: number; headshot: boolean } | null {
     let best: { peerId: string; point: THREE.Vector3; distance: number; headshot: boolean } | null = null;
-    for (const [peerId, rp] of this.remotePlayers) {
-      const hits = raycaster.intersectObject(rp.group, true);
-      if (hits.length === 0) continue;
-      const hit = hits[0];
+    const targets: THREE.Object3D[] = [];
+    for (const rp of this.remotePlayers.values()) {
+      rp.group.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        if (mesh.isMesh && !(child as unknown as { isSprite?: boolean }).isSprite) {
+          targets.push(mesh);
+        }
+      });
+    }
+    if (targets.length === 0) return null;
+    const hits = raycaster.intersectObjects(targets, false);
+    for (const hit of hits) {
+      let ownerId: string | null = null;
+      let ownerGroup: THREE.Group | null = null;
+      for (const [peerId, rp] of this.remotePlayers) {
+        let parent: THREE.Object3D | null = hit.object;
+        while (parent) {
+          if (parent === rp.group) {
+            ownerId = peerId;
+            ownerGroup = rp.group;
+            break;
+          }
+          parent = parent.parent;
+        }
+        if (ownerId) break;
+      }
+      if (!ownerId || !ownerGroup) continue;
       if (best && hit.distance >= best.distance) continue;
-      const headshot = hit.point.y - rp.group.position.y > 1.55;
-      best = { peerId, point: hit.point.clone(), distance: hit.distance, headshot };
+      const headshot = hit.point.y - ownerGroup.position.y > 1.55;
+      best = { peerId: ownerId, point: hit.point.clone(), distance: hit.distance, headshot };
     }
     return best;
   }
