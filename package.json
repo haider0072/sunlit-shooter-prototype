@@ -9,7 +9,10 @@
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
-    "three": "^0.165.0"
+    "peerjs": "^1.5.5",
+    "postprocessing": "^6.39.1",
+    "three": "^0.184.0",
+    "three-mesh-bvh": "^0.9.9"
   },
   "devDependencies": {
     "@types/three": "^0.184.0",

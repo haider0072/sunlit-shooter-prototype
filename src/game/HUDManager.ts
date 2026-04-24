@@ -39,8 +39,9 @@ export class HUDManager {
     this.score.textContent = `${value}`;
   }
 
-  setAmmo(current: number, reloading: boolean, grenades: number) {
-    this.ammo.textContent = reloading ? "..." : `${current} / 12  G:${grenades}`;
+  setAmmo(current: number, reloading: boolean, grenades: number, magSize = 12, weaponLabel?: string) {
+    const label = weaponLabel ? `${weaponLabel} · ` : "";
+    this.ammo.textContent = reloading ? `${label}...` : `${label}${current} / ${magSize}  G:${grenades}`;
   }
 
   setHealth(value: number) {
