@@ -985,3 +985,45 @@ body {
   background: rgba(255, 111, 89, 0.2);
   color: var(--accent);
 }
+
+/* ------ Health bar ------ */
+.health-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(255, 248, 240, 0.95);
+  border-radius: 12px;
+  box-shadow: 0 2px 10px var(--shadow);
+  color: var(--ink);
+  font-weight: 700;
+}
+.health-bar {
+  position: relative;
+  width: 96px;
+  height: 10px;
+  background: rgba(48, 61, 54, 0.14);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.health-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #39f0ff, #5ec8ff 40%, #ffe14a 75%, #ff3e9a);
+  transition: width 0.2s ease, background 0.2s ease;
+  box-shadow: 0 0 12px rgba(57, 240, 255, 0.5) inset;
+}
+.health-fill.low {
+  background: linear-gradient(90deg, #ff3e5a, #ff7a2b);
+  animation: healthPulse 0.9s ease-in-out infinite;
+}
+@keyframes healthPulse {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.3); }
+}
+.health-number {
+  font-size: 13px;
+  min-width: 28px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
