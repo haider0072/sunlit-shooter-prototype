@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { createToonMaterial } from "../rendering/ToonMaterial";
 import { animePalette } from "../anime/palette";
+import { createContactShadow } from "../anime/groundOverlay";
 
 export type EnemyType = "rusher" | "shooter" | "heavy";
 
@@ -200,6 +201,11 @@ export class Enemy {
       weapon.castShadow = true;
       this.group.add(weapon);
     }
+
+    const shadow = createContactShadow();
+    shadow.position.set(0, 0.02, 0);
+    shadow.scale.set(1.4, 1.4, 1);
+    this.group.add(shadow);
 
     this.group.scale.setScalar(this.archetype.scale);
     this.group.position.copy(spawnPosition);

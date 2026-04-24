@@ -33,10 +33,12 @@ import { PostFX } from "./game/rendering/PostFX";
 import { createStylizedSky } from "./game/rendering/StylizedSky";
 import { applyToonToObject, type ToonOptions } from "./game/rendering/ToonMaterial";
 import { animeWeaponFactories } from "./game/anime/weapons";
+import { createContactShadow } from "./game/anime/groundOverlay";
 import { EnemyManager } from "./game/enemies/EnemyManager";
 import type { Enemy } from "./game/enemies/Enemy";
 import { NetworkManager, type PeerStatePayload } from "./game/net/NetworkManager";
 import { RemotePlayer } from "./game/net/RemotePlayer";
+import { TouchControls } from "./game/TouchControls";
 import type {
   AimTrace,
   CameraMode,
@@ -142,6 +144,7 @@ class SunlitPatrol {
   private mpMode = false;
   private paused = false;
   private lastWaveShown = 0;
+  private readonly touch = new TouchControls();
   private readonly quality = buildQualityProfile(detectQualityTier());
   private readonly postfx: PostFX;
   private readonly tmpVec = new THREE.Vector3();
@@ -492,6 +495,10 @@ class SunlitPatrol {
     this.player.add(model);
     this.player.position.set(0, 0, -50);
     this.toonify(model, { shadowColor: "#3a2f48", steps: 4, rimStrength: 0.18 });
+    const shadow = createContactShadow();
+    shadow.position.set(0, 0.02, 0);
+    shadow.scale.set(1.5, 1.5, 1);
+    this.player.add(shadow);
 
     const mixer = new THREE.AnimationMixer(model);
     this.animation.setMixer(mixer);
@@ -914,6 +921,17 @@ class SunlitPatrol {
       this.sound.setVolume(normalized);
       this.syncVolumeUi();
     });
+
+    this.touch.setHandlers({
+      onFirePress: () => {
+        this.sound.resume();
+        this.shoot();
+      },
+      onJump: () => this.jump(),
+      onReload: () => this.reload(),
+      onGrenade: () => this.throwGrenade(),
+      onToggleCamera: () => this.toggleCameraMode()
+    });
   }
 
   private resizeRaf = 0;
@@ -1003,8 +1021,16 @@ class SunlitPatrol {
   }
 
   private updatePlayer(dt: number) {
-    const forward = Number(this.input.isKeyDown("KeyW") || this.input.isKeyDown("ArrowUp")) - Number(this.input.isKeyDown("KeyS") || this.input.isKeyDown("ArrowDown"));
-    const strafe = Number(this.input.isKeyDown("KeyD") || this.input.isKeyDown("ArrowRight")) - Number(this.input.isKeyDown("KeyA") || this.input.isKeyDown("ArrowLeft"));
+    let forward = Number(this.input.isKeyDown("KeyW") || this.input.isKeyDown("ArrowUp")) - Number(this.input.isKeyDown("KeyS") || this.input.isKeyDown("ArrowDown"));
+    let strafe = Number(this.input.isKeyDown("KeyD") || this.input.isKeyDown("ArrowRight")) - Number(this.input.isKeyDown("KeyA") || this.input.isKeyDown("ArrowLeft"));
+    // Touch joystick contribution
+    if (this.touch.enabled) {
+      if (Math.abs(this.touch.state.moveY) > 0.15) forward = -this.touch.state.moveY;
+      if (Math.abs(this.touch.state.moveX) > 0.15) strafe = this.touch.state.moveX;
+      const look = this.touch.consumeLook();
+      if (look.dx !== 0 || look.dy !== 0) this.applyMouseLook(look.dx, look.dy);
+      if (this.touch.state.firing) this.input.isFiring = true;
+    }
 
     const crouching = this.input.isKeyDown("KeyC") || this.input.isKeyDown("ControlLeft") || this.input.isKeyDown("ControlRight");
     const sprinting = !crouching && this.input.isKeyDown("ShiftLeft") && forward > 0;

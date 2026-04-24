@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { createToonMaterial } from "../rendering/ToonMaterial";
 import { animePalette } from "../anime/palette";
 import { animeWeaponFactories } from "../anime/weapons";
+import { createContactShadow } from "../anime/groundOverlay";
 import type { WeaponId } from "../config";
 import type { PeerStatePayload } from "./NetworkManager";
 
@@ -103,6 +104,11 @@ export class RemotePlayer {
       this.weaponSocket.add(w);
       this.weaponGroups[id] = w;
     }
+
+    const shadow = createContactShadow();
+    shadow.position.set(0, 0.02, 0);
+    shadow.scale.set(1.4, 1.4, 1);
+    this.group.add(shadow);
   }
 
   applyState(state: PeerStatePayload) {

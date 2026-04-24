@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { animePalette } from "./anime/palette";
 import { createToonMaterial } from "./rendering/ToonMaterial";
 import { populateArena, updateArenaProps } from "./anime/arenaProps";
+import { createGroundOverlay } from "./anime/groundOverlay";
 
 export function setupLights(scene: THREE.Scene) {
   const hemi = new THREE.HemisphereLight("#cfe8ff", "#6b7a5a", 0.9);
@@ -109,6 +110,7 @@ export function createWorld(scene: THREE.Scene) {
   sea.position.set(-82, -0.02, 0);
   scene.add(sea);
 
+  createGroundOverlay(scene);
   createTreeInstances(scene);
   createHouses(scene);
   createBushes(scene);
