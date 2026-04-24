@@ -33,6 +33,8 @@ import { PostFX } from "./game/rendering/PostFX";
 import { createStylizedSky } from "./game/rendering/StylizedSky";
 import { applyToonToObject, type ToonOptions } from "./game/rendering/ToonMaterial";
 import { animeWeaponFactories } from "./game/anime/weapons";
+import { EnemyManager } from "./game/enemies/EnemyManager";
+import type { Enemy } from "./game/enemies/Enemy";
 import type {
   AimTrace,
   CameraMode,
@@ -125,6 +127,13 @@ class SunlitPatrol {
   private readonly grenades: Grenade[] = [];
   private readonly effects = new EffectManager(this.scene, this.camera);
   private readonly animeFx = new AnimeEffects(this.scene);
+  private readonly enemies = new EnemyManager(
+    this.scene,
+    () => this.clock.elapsedTime,
+    () => this.player.position
+  );
+  private kill_streak = 0;
+  private killStreakTimer = 0;
   private readonly quality = buildQualityProfile(detectQualityTier());
   private readonly postfx: PostFX;
   private readonly tmpVec = new THREE.Vector3();
@@ -226,7 +235,8 @@ class SunlitPatrol {
     await this.precompileShaders();
     this.isReady = true;
     hud.hideLoader();
-    this.setStatus("Range online");
+    this.setStatus("Wave 1 incoming...");
+    this.enemies.scheduleFirstWave(2.5);
     if (this.debug.isEnabled()) this.renderDebugPanel();
     this.updateHud();
     this.renderer.setAnimationLoop(() => this.update());
@@ -768,6 +778,7 @@ class SunlitPatrol {
     this.updateWeaponPose(dt);
     this.updateCamera(dt);
     this.updateTargets(dt);
+    this.updateEnemies(dt);
     this.projectiles.update(dt);
     this.updateGrenades(dt);
     this.effects.update(dt);
@@ -948,6 +959,49 @@ class SunlitPatrol {
     this.screenShakeAmount = THREE.MathUtils.damp(this.screenShakeAmount, 0, 10, dt);
   }
 
+  private updateEnemies(dt: number) {
+    const events = this.enemies.update(dt);
+    // Enemy fire events — simple "tracer toward player" VFX
+    for (const { enemy, fireDirection } of events) {
+      const origin = enemy.getWorldCenter();
+      const target = origin.clone().addScaledVector(fireDirection, 22);
+      this.effects.spawnTracer(origin, target);
+      this.animeFx.spawnMuzzleBurst(origin, fireDirection);
+      // Damage player if close enough and roughly aimed
+      const playerDir = new THREE.Vector3().subVectors(this.player.position, origin).normalize();
+      const aimDot = playerDir.dot(fireDirection);
+      if (aimDot > 0.92) {
+        this.applyDamageToPlayer(enemy.archetype.damagePerSec * 0.25);
+      }
+    }
+    // Kill streak timer decay
+    if (this.killStreakTimer > 0) {
+      this.killStreakTimer = Math.max(0, this.killStreakTimer - dt);
+      if (this.killStreakTimer <= 0) this.kill_streak = 0;
+    }
+    // HUD objective — show wave info
+    if (this.enemies.isInBreak) {
+      hud.setObjective(`Wave ${this.enemies.currentWave} cleared — next in ${Math.ceil(this.enemies.nextWaveSecs)}s`);
+    } else {
+      const active = this.enemies.activeEnemies.length;
+      hud.setObjective(`${this.enemies.waveLabel} · ${active} left`);
+    }
+  }
+
+  private applyDamageToPlayer(amount: number) {
+    this.health = Math.max(0, this.health - amount);
+    hud.setHealth(this.health);
+    hud.flashCrosshairMiss();
+    this.triggerScreenShake(0.2);
+    if (this.health <= 0) {
+      this.setStatus("Down! Wave resetting...");
+      this.health = 100;
+      this.enemies.reset();
+      this.enemies.scheduleFirstWave(3.0);
+      hud.setHealth(this.health);
+    }
+  }
+
   private updateTargets(dt: number) {
     let activeCount = 0;
     this.targets.forEach((target) => {
@@ -1126,16 +1180,27 @@ class SunlitPatrol {
     this.effects.spawnMuzzleBurst(visualMuzzle, shot.direction, this.cameraMode === "first");
     this.animeFx.spawnMuzzleBurst(visualMuzzle, shot.direction);
     this.triggerScreenShake(0.08);
-    this.effects.spawnTracer(visualMuzzle, shot.point);
-    this.effects.spawnShellEjection(visualMuzzle, shot.direction);
     this.logShotTelemetry(muzzle, visualMuzzle, shot, preShot);
     this.spawnDebugShotMarkers(muzzle, visualMuzzle, shot.point);
-    if (shot.target) {
-      this.damageTarget(shot.target, shot.point);
+
+    // Check for enemy hit along the same ray — enemies take priority over targets
+    this.raycaster.set(shot.origin, shot.direction);
+    this.raycaster.far = this.activeTuning.range;
+    const enemyHit = this.enemies.raycastHit(this.raycaster);
+    const enemyCloser = enemyHit && enemyHit.distance < (shot.hitDistance ?? shot.rangeDistance);
+    if (enemyCloser && enemyHit) {
+      this.effects.spawnTracer(visualMuzzle, enemyHit.hitPoint);
+      this.effects.spawnShellEjection(visualMuzzle, shot.direction);
+      this.damageEnemy(enemyHit.enemy, enemyHit.hitPoint, enemyHit.headshot);
     } else {
-      this.sound.playDryImpact();
-      this.effects.spawnImpact(shot.point, palette.cream);
-      this.setStatus("Range impact");
+      this.effects.spawnTracer(visualMuzzle, shot.point);
+      this.effects.spawnShellEjection(visualMuzzle, shot.direction);
+      if (shot.target) {
+        this.damageTarget(shot.target, shot.point);
+      } else {
+        this.sound.playDryImpact();
+        this.effects.spawnImpact(shot.point, palette.cream);
+      }
     }
     this.applyShotRecoil();
 
@@ -1766,6 +1831,35 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
       current = current.parent;
     }
     return undefined;
+  }
+
+  private damageEnemy(enemy: Enemy, point: THREE.Vector3, headshot: boolean) {
+    const damage = this.activeTuning.damage;
+    const result = enemy.takeDamage(damage, headshot);
+    const displayDmg = Math.round(result.damageDealt);
+    const shouldCrit = headshot || result.killed;
+    this.animeFx.spawnHitSpark(point, shouldCrit);
+    this.animeFx.spawnDamageNumber(point.clone().add(new THREE.Vector3(0, 0.4, 0)), this.camera, displayDmg, shouldCrit);
+    this.sound.playHit(result.killed);
+    this.triggerScreenShake(shouldCrit ? 0.35 : 0.12);
+    this.score += Math.round(damage * 5);
+    if (result.killed) {
+      const info = this.enemies.registerKill(enemy);
+      this.kill_streak += 1;
+      this.killStreakTimer = 3.2;
+      const multiplier = 1 + Math.min(this.kill_streak - 1, 4) * 0.25;
+      this.score += Math.round(info.scoreAwarded * multiplier);
+      const centerPos = enemy.getWorldCenter();
+      this.animeFx.spawnPolygonShatter(centerPos, enemy.archetype.primary);
+      this.timeScale = headshot ? 0.22 : 0.32;
+      this.triggerScreenShake(0.55);
+      this.setStatus(`${enemy.archetype.displayName} down · ×${multiplier.toFixed(2)}`);
+      window.setTimeout(() => this.enemies.removeEnemy(enemy), 280);
+    } else {
+      this.setStatus(headshot ? "HEADSHOT!" : `Hit ${enemy.archetype.displayName}`);
+    }
+    hud.flashCrosshairHit();
+    this.updateHud();
   }
 
   private damageTarget(target: Target, point: THREE.Vector3) {
