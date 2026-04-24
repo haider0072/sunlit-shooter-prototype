@@ -104,6 +104,7 @@
             </button>
           </div>
           <div id="lobbyHostPanel" class="lobby-panel" hidden>
+            <button id="lobbyHostClose" class="lobby-close" type="button" aria-label="Cancel host">×</button>
             <p class="lobby-panel-hint">Share this code with your friend:</p>
             <div class="lobby-code-row">
               <code id="lobbyHostCode">—</code>
@@ -112,6 +113,7 @@
             <p class="lobby-panel-status" id="lobbyHostStatus">Waiting for friend to join...</p>
           </div>
           <div id="lobbyJoinPanel" class="lobby-panel" hidden>
+            <button id="lobbyJoinClose" class="lobby-close" type="button" aria-label="Cancel join">×</button>
             <p class="lobby-panel-hint">Enter the host's room code:</p>
             <input id="lobbyJoinCode" class="lobby-input" type="text" placeholder="xxxx-xxxx-xxxx" autocomplete="off" />
             <button id="lobbyJoinSubmit" type="button" class="lobby-primary">Connect</button>

@@ -963,3 +963,25 @@ body {
 @media (pointer: coarse) {
   .touch-layer.active { display: block; }
 }
+
+.lobby-panel {
+  position: relative;
+}
+.lobby-close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(48, 61, 54, 0.08);
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.lobby-close:hover {
+  background: rgba(255, 111, 89, 0.2);
+  color: var(--accent);
+}

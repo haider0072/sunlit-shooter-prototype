@@ -361,6 +361,20 @@ class SunlitPatrol {
         if (joinStatus) joinStatus.textContent = `Failed: ${(err as Error).message}`;
       }
     });
+
+    document.getElementById("lobbyHostClose")?.addEventListener("click", () => {
+      this.network.dispose();
+      this.mpMode = false;
+      showPanel(null);
+      if (hostStatus) hostStatus.textContent = "Waiting for friend to join...";
+      if (hostCode) hostCode.textContent = "—";
+    });
+    document.getElementById("lobbyJoinClose")?.addEventListener("click", () => {
+      this.network.dispose();
+      this.mpMode = false;
+      showPanel(null);
+      if (joinStatus) joinStatus.textContent = "";
+    });
   }
 
   private startSolo(withWaves = true) {
