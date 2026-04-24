@@ -27,7 +27,7 @@ import { palette } from "./game/palette";
 import { animePalette } from "./game/anime/palette";
 import { AnimeEffects } from "./game/anime/AnimeEffects";
 import { ProjectileSystem } from "./game/ProjectileSystem";
-import { createWorld, setupLights, updateSakuraDrifts } from "./game/world";
+import { createWorld, setupLights, updateSakuraDrifts, updateArenaProps } from "./game/world";
 import { applyRendererProfile, buildQualityProfile, detectQualityTier } from "./game/rendering/QualityTier";
 import { PostFX } from "./game/rendering/PostFX";
 import { createStylizedSky } from "./game/rendering/StylizedSky";
@@ -140,6 +140,8 @@ class SunlitPatrol {
   private readonly remotePlayers = new Map<string, RemotePlayer>();
   private netStateTimer = 0;
   private mpMode = false;
+  private paused = false;
+  private lastWaveShown = 0;
   private readonly quality = buildQualityProfile(detectQualityTier());
   private readonly postfx: PostFX;
   private readonly tmpVec = new THREE.Vector3();
@@ -364,6 +366,36 @@ class SunlitPatrol {
       this.enemies.scheduleFirstWave(2.5);
     } else {
       this.setStatus("Arena warmed up — waiting for peer");
+    }
+    hud.onPauseMenu({
+      resume: () => this.togglePause(false),
+      restart: () => {
+        this.enemies.reset();
+        this.lastWaveShown = 0;
+        this.kill_streak = 0;
+        this.health = 100;
+        hud.setHealth(this.health);
+        this.enemies.scheduleFirstWave(1.5);
+        this.togglePause(false);
+        this.setStatus("Range reset");
+      },
+      quit: () => {
+        this.togglePause(false);
+        this.enemies.reset();
+        this.lastWaveShown = 0;
+        const lobby = document.getElementById("lobby");
+        lobby?.setAttribute("aria-hidden", "false");
+        if (document.pointerLockElement) document.exitPointerLock();
+      }
+    });
+  }
+
+  private togglePause(force?: boolean) {
+    const next = force !== undefined ? force : !this.paused;
+    this.paused = next;
+    hud.setPause(next);
+    if (next && document.pointerLockElement) {
+      document.exitPointerLock();
     }
   }
 
@@ -821,6 +853,7 @@ class SunlitPatrol {
         const map: Record<1 | 2 | 3, WeaponId> = { 1: "rifle", 2: "pistol", 3: "smg" };
         this.switchWeapon(map[slot]);
       },
+      onPause: () => this.togglePause(),
       onToggleDebug: () => this.setDebugEnabled(!this.debug.isEnabled()),
 
       onToggleCamera: () => this.toggleCameraMode(),
@@ -918,6 +951,10 @@ class SunlitPatrol {
 
   private update() {
     const rawDt = Math.min(this.clock.getDelta(), 0.05);
+    if (this.paused) {
+      this.postfx.render(rawDt);
+      return;
+    }
     this.timeScale = THREE.MathUtils.damp(this.timeScale, 1, 6, rawDt);
     const dt = rawDt * this.timeScale;
     this.frameSequence += 1;
@@ -949,6 +986,7 @@ class SunlitPatrol {
     this.animation.update(dt);
     this.firstPersonMixer?.update(dt);
     updateSakuraDrifts(this.scene, dt, this.clock.elapsedTime);
+    updateArenaProps(this.scene, dt, this.clock.elapsedTime);
     // Remote players interp
     for (const rp of this.remotePlayers.values()) rp.update(dt);
     // Broadcast local state at ~20Hz
@@ -1156,6 +1194,19 @@ class SunlitPatrol {
     } else {
       const active = this.enemies.activeEnemies.length;
       hud.setObjective(`${this.enemies.waveLabel} · ${active} left`);
+    }
+    // Detect new wave transitions
+    if (this.enemies.currentWave > this.lastWaveShown && this.enemies.activeEnemies.length + this.enemies.allEnemies.length > 0) {
+      this.lastWaveShown = this.enemies.currentWave;
+      const title = this.enemies.waveLabel.replace(/^Wave \d+\s*[—-]\s*/, "").trim() || "Incoming";
+      hud.showWaveBanner(this.enemies.currentWave, title);
+    }
+    // Combo badge
+    if (this.kill_streak > 1 && this.killStreakTimer > 0) {
+      const mult = 1 + Math.min(this.kill_streak - 1, 4) * 0.25;
+      hud.showCombo(mult, this.kill_streak);
+    } else {
+      hud.hideCombo();
     }
   }
 

@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { animePalette } from "./anime/palette";
 import { createToonMaterial } from "./rendering/ToonMaterial";
+import { populateArena, updateArenaProps } from "./anime/arenaProps";
 
 export function setupLights(scene: THREE.Scene) {
   const hemi = new THREE.HemisphereLight("#cfe8ff", "#6b7a5a", 0.9);
@@ -113,7 +114,10 @@ export function createWorld(scene: THREE.Scene) {
   createBushes(scene);
   createSakuraDrifts(scene);
   createGrassTufts(scene);
+  populateArena(scene);
 }
+
+export { updateArenaProps };
 
 function createTreeInstances(scene: THREE.Scene) {
   const trunkGeo = new THREE.CylinderGeometry(0.14, 0.2, 1.4, 6);

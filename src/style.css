@@ -740,3 +740,155 @@ body {
 .lobby-secondary:hover {
   filter: brightness(1.05);
 }
+
+/* ------ Wave banner ------ */
+.wave-banner {
+  position: fixed;
+  top: 22%;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  color: #fff;
+  text-shadow: 0 4px 14px rgba(12, 6, 32, 0.65);
+  pointer-events: none;
+  z-index: 30;
+  opacity: 0;
+  transition: opacity 0.35s ease, transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.wave-banner[aria-hidden="false"] {
+  opacity: 1;
+  transform: translateX(-50%) translateY(-8px);
+}
+.wave-banner-label {
+  font-size: 14px;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: rgba(255, 220, 240, 0.85);
+}
+.wave-banner-number {
+  font-size: 86px;
+  line-height: 0.95;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  background: linear-gradient(135deg, #ff79b8, #ffd95c 60%, #39f0ff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 6px 22px rgba(255, 100, 180, 0.45));
+}
+.wave-banner-title {
+  margin-top: 6px;
+  font-size: 18px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #fff;
+}
+
+/* ------ Combo badge ------ */
+.combo-badge {
+  position: fixed;
+  top: 92px;
+  right: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(255, 62, 154, 0.92), rgba(255, 130, 70, 0.92));
+  color: #fff;
+  text-shadow: 0 2px 6px rgba(12, 6, 32, 0.4);
+  box-shadow: 0 10px 24px rgba(255, 62, 154, 0.35);
+  pointer-events: none;
+  z-index: 20;
+  opacity: 0;
+  transform: translateX(20px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.combo-badge[aria-hidden="false"] {
+  opacity: 1;
+  transform: translateX(0);
+}
+.combo-label {
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+.combo-mult {
+  font-size: 22px;
+  font-weight: 800;
+}
+.combo-kills {
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+/* ------ Pause menu ------ */
+.pause-menu {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(12, 6, 32, 0.72);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 35;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.18s ease, visibility 0.18s ease;
+}
+.pause-menu[aria-hidden="false"] {
+  opacity: 1;
+  visibility: visible;
+}
+.pause-card {
+  background: rgba(255, 248, 240, 0.98);
+  padding: 28px 32px;
+  border-radius: 20px;
+  min-width: 280px;
+  text-align: center;
+  color: var(--ink);
+  box-shadow: 0 24px 48px rgba(12, 6, 32, 0.4);
+}
+.pause-card h2 {
+  margin: 0 0 18px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.pause-btn {
+  display: block;
+  width: 100%;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  border: none;
+  border-radius: 12px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--accent);
+  color: #fff;
+  transition: filter 0.12s ease, transform 0.12s ease;
+}
+.pause-btn:hover {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+}
+.pause-btn.secondary {
+  background: var(--accent-2);
+}
+.pause-btn.subtle {
+  background: transparent;
+  color: var(--muted);
+  font-weight: 500;
+}
+.pause-btn.subtle:hover {
+  background: rgba(48, 61, 54, 0.05);
+}
+.pause-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}

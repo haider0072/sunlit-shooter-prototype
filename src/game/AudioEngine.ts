@@ -16,6 +16,46 @@ export class AudioEngine {
     if (context.state === "suspended") {
       void context.resume();
     }
+    this.ensureAmbientLoop();
+  }
+
+  private ambientStarted = false;
+  private ambientGain: GainNode | null = null;
+  private ensureAmbientLoop() {
+    if (this.ambientStarted) return;
+    const ctx = this.ensureContext();
+    if (!ctx || !this.master) return;
+    this.ambientStarted = true;
+    const gain = ctx.createGain();
+    gain.gain.value = 0.08;
+    gain.connect(this.master);
+    this.ambientGain = gain;
+    // Soft evolving pad with 3 detuned sines + slow LFO
+    const freqs = [130.81, 174.61, 220.0]; // C3, F3, A3 — sus chord
+    for (const freq of freqs) {
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      const oscGain = ctx.createGain();
+      oscGain.gain.value = 0.33;
+      osc.connect(oscGain).connect(gain);
+      const lfo = ctx.createOscillator();
+      lfo.frequency.value = 0.1 + Math.random() * 0.2;
+      const lfoGain = ctx.createGain();
+      lfoGain.gain.value = 0.12;
+      lfo.connect(lfoGain).connect(oscGain.gain);
+      const filter = ctx.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = 1400;
+      osc.disconnect();
+      osc.connect(filter).connect(oscGain).connect(gain);
+      osc.start();
+      lfo.start();
+    }
+  }
+
+  setAmbientGain(value: number) {
+    if (this.ambientGain) this.ambientGain.gain.value = Math.max(0, Math.min(0.35, value));
   }
 
   getVolume() {
