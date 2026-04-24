@@ -1,11 +1,17 @@
 import Peer, { type DataConnection } from "peerjs";
 import type { WeaponId } from "../config";
 
-// PeerJS config: explicit Google STUN servers + optional custom broker override.
+// PeerJS config: private Railway signaling server by default.
 // Override via URL params: ?peer=host-without-scheme&peerPath=/peerjs&peerSecure=1
+const DEFAULT_PEER_HOST = "sunlit-shooter-prototype-production.up.railway.app";
+const DEFAULT_PEER_PATH = "/peerjs";
+
 function resolvePeerOptions() {
   const base: Record<string, unknown> = {
     debug: 1,
+    host: DEFAULT_PEER_HOST,
+    path: DEFAULT_PEER_PATH,
+    secure: true,
     config: {
       iceServers: [
         { urls: "stun:stun.l.google.com:19302" },
@@ -18,14 +24,15 @@ function resolvePeerOptions() {
   if (typeof window === "undefined") return base;
   const params = new URLSearchParams(window.location.search);
   const host = params.get("peer");
-  if (!host) return base;
-  base.host = host;
-  base.path = params.get("peerPath") ?? "/peerjs";
-  const secureParam = params.get("peerSecure");
-  const port = params.get("peerPort");
-  if (port) base.port = Number(port);
-  if (secureParam === "0") base.secure = false;
-  else base.secure = true;
+  if (host) {
+    base.host = host;
+    base.path = params.get("peerPath") ?? "/peerjs";
+    const secureParam = params.get("peerSecure");
+    const port = params.get("peerPort");
+    if (port) base.port = Number(port);
+    if (secureParam === "0") base.secure = false;
+    else base.secure = true;
+  }
   return base;
 }
 const PEER_OPTIONS = resolvePeerOptions();
