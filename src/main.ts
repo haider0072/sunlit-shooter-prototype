@@ -35,6 +35,8 @@ import { applyToonToObject, type ToonOptions } from "./game/rendering/ToonMateri
 import { animeWeaponFactories } from "./game/anime/weapons";
 import { EnemyManager } from "./game/enemies/EnemyManager";
 import type { Enemy } from "./game/enemies/Enemy";
+import { NetworkManager, type PeerStatePayload } from "./game/net/NetworkManager";
+import { RemotePlayer } from "./game/net/RemotePlayer";
 import type {
   AimTrace,
   CameraMode,
@@ -134,6 +136,10 @@ class SunlitPatrol {
   );
   private kill_streak = 0;
   private killStreakTimer = 0;
+  private readonly network = new NetworkManager();
+  private readonly remotePlayers = new Map<string, RemotePlayer>();
+  private netStateTimer = 0;
+  private mpMode = false;
   private readonly quality = buildQualityProfile(detectQualityTier());
   private readonly postfx: PostFX;
   private readonly tmpVec = new THREE.Vector3();
@@ -235,11 +241,168 @@ class SunlitPatrol {
     await this.precompileShaders();
     this.isReady = true;
     hud.hideLoader();
-    this.setStatus("Wave 1 incoming...");
-    this.enemies.scheduleFirstWave(2.5);
+    this.bindLobby();
     if (this.debug.isEnabled()) this.renderDebugPanel();
     this.updateHud();
     this.renderer.setAnimationLoop(() => this.update());
+  }
+
+  private bindLobby() {
+    const lobby = document.getElementById("lobby");
+    const soloBtn = document.getElementById("lobbySolo") as HTMLButtonElement | null;
+    const hostBtn = document.getElementById("lobbyHost") as HTMLButtonElement | null;
+    const joinBtn = document.getElementById("lobbyJoin") as HTMLButtonElement | null;
+    const hostPanel = document.getElementById("lobbyHostPanel");
+    const joinPanel = document.getElementById("lobbyJoinPanel");
+    const hostCode = document.getElementById("lobbyHostCode");
+    const hostCopy = document.getElementById("lobbyHostCopy") as HTMLButtonElement | null;
+    const hostStatus = document.getElementById("lobbyHostStatus");
+    const joinInput = document.getElementById("lobbyJoinCode") as HTMLInputElement | null;
+    const joinSubmit = document.getElementById("lobbyJoinSubmit") as HTMLButtonElement | null;
+    const joinStatus = document.getElementById("lobbyJoinStatus");
+    if (!lobby || !soloBtn || !hostBtn || !joinBtn) return;
+
+    const hideLobby = () => {
+      lobby.setAttribute("aria-hidden", "true");
+    };
+    const showPanel = (panel: HTMLElement | null) => {
+      hostPanel?.setAttribute("hidden", "");
+      joinPanel?.setAttribute("hidden", "");
+      if (panel) panel.removeAttribute("hidden");
+    };
+
+    this.network.on({
+      onRoleChange: (role, info) => {
+        if (role === "host-ready" && info?.myId && hostCode) {
+          hostCode.textContent = info.myId;
+        }
+        if (role === "connected") {
+          if (hostStatus) hostStatus.textContent = "Peer connected — entering arena...";
+          if (joinStatus) joinStatus.textContent = "Connected!";
+          this.mpMode = true;
+          this.enemies.reset();
+          this.setStatus("Multiplayer match live");
+          window.setTimeout(hideLobby, 650);
+        }
+        if (role === "offline" && info?.error) {
+          if (hostStatus) hostStatus.textContent = `Error: ${info.error}`;
+          if (joinStatus) joinStatus.textContent = `Error: ${info.error}`;
+        }
+      },
+      onState: (peerId, state) => this.handleRemoteState(peerId, state),
+      onFire: (peerId, fire) => {
+        void peerId;
+        const origin = new THREE.Vector3(...fire.origin);
+        const dir = new THREE.Vector3(...fire.direction);
+        const end = origin.clone().addScaledVector(dir, 24);
+        this.effects.spawnTracer(origin, end);
+        this.animeFx.spawnMuzzleBurst(origin, dir);
+      },
+      onPeerDisconnect: (peerId) => {
+        const rp = this.remotePlayers.get(peerId);
+        if (rp) {
+          this.scene.remove(rp.group);
+          rp.dispose();
+          this.remotePlayers.delete(peerId);
+        }
+        this.setStatus("Peer disconnected");
+      }
+    });
+
+    soloBtn.addEventListener("click", () => {
+      this.startSolo();
+      hideLobby();
+    });
+
+    hostBtn.addEventListener("click", async () => {
+      showPanel(hostPanel);
+      if (hostStatus) hostStatus.textContent = "Generating room code...";
+      try {
+        await this.network.host();
+        if (hostStatus) hostStatus.textContent = "Room ready — waiting for friend...";
+        // Start game arena so host can move around while waiting
+        this.startSolo(/* waves */ false);
+      } catch (err) {
+        if (hostStatus) hostStatus.textContent = `Failed: ${(err as Error).message}`;
+      }
+    });
+
+    hostCopy?.addEventListener("click", async () => {
+      const code = hostCode?.textContent?.trim() ?? "";
+      if (!code || code === "—") return;
+      try {
+        await navigator.clipboard.writeText(code);
+        if (hostStatus) hostStatus.textContent = "Copied. Share and wait for friend.";
+      } catch {
+        if (hostStatus) hostStatus.textContent = "Copy failed — select code manually.";
+      }
+    });
+
+    joinBtn.addEventListener("click", () => {
+      showPanel(joinPanel);
+      joinInput?.focus();
+    });
+
+    joinSubmit?.addEventListener("click", async () => {
+      const code = joinInput?.value.trim();
+      if (!code) {
+        if (joinStatus) joinStatus.textContent = "Paste the host's code first.";
+        return;
+      }
+      if (joinStatus) joinStatus.textContent = "Connecting...";
+      try {
+        await this.network.join(code);
+      } catch (err) {
+        if (joinStatus) joinStatus.textContent = `Failed: ${(err as Error).message}`;
+      }
+    });
+  }
+
+  private startSolo(withWaves = true) {
+    if (withWaves) {
+      this.setStatus("Wave 1 incoming...");
+      this.enemies.scheduleFirstWave(2.5);
+    } else {
+      this.setStatus("Arena warmed up — waiting for peer");
+    }
+  }
+
+  private handleRemoteState(peerId: string, state: PeerStatePayload) {
+    let rp = this.remotePlayers.get(peerId);
+    if (!rp) {
+      rp = new RemotePlayer(peerId);
+      this.remotePlayers.set(peerId, rp);
+      this.scene.add(rp.group);
+    }
+    rp.applyState(state);
+  }
+
+  private broadcastLocalState() {
+    if (!this.mpMode || this.network.role !== "connected") return;
+    const payload: PeerStatePayload = {
+      type: "state",
+      t: performance.now(),
+      pos: [this.player.position.x, this.player.position.y, this.player.position.z],
+      yaw: this.yaw,
+      pitch: this.pitch,
+      weaponId: this.currentWeaponId,
+      health: this.health,
+      sprinting: this.input.isKeyDown("ShiftLeft"),
+      sliding: this.slideTimer > 0,
+      crouch: this.crouchBlend
+    };
+    this.network.broadcast(payload);
+  }
+
+  private broadcastFire(origin: THREE.Vector3, direction: THREE.Vector3) {
+    if (!this.mpMode || this.network.role !== "connected") return;
+    this.network.broadcast({
+      type: "fire",
+      t: performance.now(),
+      origin: [origin.x, origin.y, origin.z],
+      direction: [direction.x, direction.y, direction.z],
+      weaponId: this.currentWeaponId
+    });
   }
 
   private async precompileShaders() {
@@ -786,6 +949,14 @@ class SunlitPatrol {
     this.animation.update(dt);
     this.firstPersonMixer?.update(dt);
     updateSakuraDrifts(this.scene, dt, this.clock.elapsedTime);
+    // Remote players interp
+    for (const rp of this.remotePlayers.values()) rp.update(dt);
+    // Broadcast local state at ~20Hz
+    this.netStateTimer -= dt;
+    if (this.netStateTimer <= 0) {
+      this.netStateTimer = 0.05;
+      this.broadcastLocalState();
+    }
     this.postfx.render(dt);
     if (this.debug.isEnabled() && this.debugLiveTimer >= 0.25) {
       this.debugLiveTimer = 0;
@@ -1180,6 +1351,7 @@ class SunlitPatrol {
     this.effects.spawnMuzzleBurst(visualMuzzle, shot.direction, this.cameraMode === "first");
     this.animeFx.spawnMuzzleBurst(visualMuzzle, shot.direction);
     this.triggerScreenShake(0.08);
+    this.broadcastFire(visualMuzzle, shot.direction);
     this.logShotTelemetry(muzzle, visualMuzzle, shot, preShot);
     this.spawnDebugShotMarkers(muzzle, visualMuzzle, shot.point);
 
