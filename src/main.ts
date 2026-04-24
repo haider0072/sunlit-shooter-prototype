@@ -304,6 +304,11 @@ class SunlitPatrol {
         this.effects.spawnTracer(origin, end);
         this.animeFx.spawnMuzzleBurst(origin, dir);
       },
+      onHit: (peerId, hit) => {
+        void peerId;
+        if (hit.targetId !== this.network.myId) return;
+        this.applyDamageToPlayer(hit.damage);
+      },
       onPeerDisconnect: (peerId) => {
         const rp = this.remotePlayers.get(peerId);
         if (rp) {
@@ -423,6 +428,8 @@ class SunlitPatrol {
       rp = new RemotePlayer(peerId, this.characterTemplate ?? undefined);
       this.remotePlayers.set(peerId, rp);
       this.scene.add(rp.group);
+    } else if (this.characterTemplate) {
+      rp.upgradeCharacter(this.characterTemplate);
     }
     rp.applyState(state);
   }
@@ -1012,6 +1019,9 @@ class SunlitPatrol {
     this.updatePlayer(dt);
     this.updateWeaponPose(dt);
     this.updateCamera(dt);
+    // Defensive: enforce local body hidden in FPS every frame
+    this.player.visible = this.cameraMode === "third";
+    if (this.firstPersonRig) this.firstPersonRig.visible = this.cameraMode === "first";
     this.updateTargets(dt);
     this.updateEnemies(dt);
     this.projectiles.update(dt);
@@ -1253,6 +1263,19 @@ class SunlitPatrol {
     }
   }
 
+  private raycastRemotePlayers(raycaster: THREE.Raycaster): { peerId: string; point: THREE.Vector3; distance: number; headshot: boolean } | null {
+    let best: { peerId: string; point: THREE.Vector3; distance: number; headshot: boolean } | null = null;
+    for (const [peerId, rp] of this.remotePlayers) {
+      const hits = raycaster.intersectObject(rp.group, true);
+      if (hits.length === 0) continue;
+      const hit = hits[0];
+      if (best && hit.distance >= best.distance) continue;
+      const headshot = hit.point.y - rp.group.position.y > 1.55;
+      best = { peerId, point: hit.point.clone(), distance: hit.distance, headshot };
+    }
+    return best;
+  }
+
   private applyDamageToPlayer(amount: number) {
     this.health = Math.max(0, this.health - amount);
     hud.setHealth(this.health);
@@ -1453,8 +1476,26 @@ class SunlitPatrol {
     this.raycaster.set(shot.origin, shot.direction);
     this.raycaster.far = this.activeTuning.range;
     const enemyHit = this.enemies.raycastHit(this.raycaster);
-    const enemyCloser = enemyHit && enemyHit.distance < (shot.hitDistance ?? shot.rangeDistance);
-    if (enemyCloser && enemyHit) {
+    const enemyDist = enemyHit ? enemyHit.distance : Infinity;
+    const sceneDist = shot.hitDistance ?? shot.rangeDistance;
+    const remoteHit = this.raycastRemotePlayers(this.raycaster);
+    const remoteDist = remoteHit ? remoteHit.distance : Infinity;
+    const bestDist = Math.min(enemyDist, sceneDist, remoteDist);
+    if (remoteHit && remoteDist === bestDist) {
+      this.effects.spawnTracer(visualMuzzle, remoteHit.point);
+      this.effects.spawnShellEjection(visualMuzzle, shot.direction);
+      this.animeFx.spawnHitSpark(remoteHit.point);
+      const damage = this.activeTuning.damage * (remoteHit.headshot ? 2 : 1);
+      this.animeFx.spawnDamageNumber(remoteHit.point.clone().add(new THREE.Vector3(0, 0.4, 0)), this.camera, Math.round(damage), remoteHit.headshot);
+      this.network.broadcast({
+        type: "hit",
+        t: performance.now(),
+        targetId: remoteHit.peerId,
+        damage,
+        headshot: remoteHit.headshot
+      });
+      hud.flashCrosshairHit();
+    } else if (enemyHit && enemyDist === bestDist) {
       this.effects.spawnTracer(visualMuzzle, enemyHit.hitPoint);
       this.effects.spawnShellEjection(visualMuzzle, shot.direction);
       this.damageEnemy(enemyHit.enemy, enemyHit.hitPoint, enemyHit.headshot);
