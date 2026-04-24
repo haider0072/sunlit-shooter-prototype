@@ -1,6 +1,24 @@
 import Peer, { type DataConnection } from "peerjs";
 import type { WeaponId } from "../config";
 
+// PeerJS config: explicit Google STUN servers for better NAT traversal,
+// plus debug level for early-signal diagnostics.
+const PEER_OPTIONS = {
+  debug: 1,
+  config: {
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" },
+      { urls: "stun:stun2.l.google.com:19302" },
+      { urls: "stun:global.stun.twilio.com:3478" }
+    ]
+  }
+} as const;
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 export type PeerStatePayload = {
   type: "state";
   t: number;
@@ -49,6 +67,20 @@ type Listeners = {
   onPeerDisconnect?: (peerId: string) => void;
 };
 
+function friendlyError(err: Error): string {
+  const m = err.message || `${err}`;
+  if (/network|websocket|unavailable|disconnected/i.test(m)) {
+    return "Matchmaking server is unreachable. Try again, switch Wi-Fi, or ask your friend to host instead.";
+  }
+  if (/peer-unavailable|could not connect/i.test(m)) {
+    return "That room code is invalid or the host left. Ask for a fresh code.";
+  }
+  if (/not respond/i.test(m)) {
+    return "Connection timed out. Check the code and that the host hasn't closed their tab.";
+  }
+  return m;
+}
+
 export class NetworkManager {
   private peer: Peer | null = null;
   private connections = new Map<string, DataConnection>();
@@ -62,48 +94,100 @@ export class NetworkManager {
 
   async host(): Promise<string> {
     this.dispose();
-    return new Promise((resolve, reject) => {
-      const peer = new Peer();
-      this.peer = peer;
-      this.role = "hosting";
-      this.listeners.onRoleChange?.("hosting");
-      peer.on("open", (id: string) => {
-        this.myId = id;
-        this.role = "host-ready";
-        this.listeners.onRoleChange?.("host-ready", { myId: id });
-        resolve(id);
-      });
-      peer.on("connection", (conn: DataConnection) => this.bindConnection(conn));
-      peer.on("error", (err: Error) => {
-        this.listeners.onRoleChange?.("offline", { error: err.message });
-        reject(err);
-      });
-    });
+    return this.withRetry(
+      () =>
+        new Promise<string>((resolve, reject) => {
+          const peer = new Peer(PEER_OPTIONS);
+          this.peer = peer;
+          this.role = "hosting";
+          this.listeners.onRoleChange?.("hosting");
+          let settled = false;
+          peer.on("open", (id: string) => {
+            settled = true;
+            this.myId = id;
+            this.role = "host-ready";
+            this.listeners.onRoleChange?.("host-ready", { myId: id });
+            resolve(id);
+          });
+          peer.on("connection", (conn: DataConnection) => this.bindConnection(conn));
+          peer.on("error", (err: Error) => {
+            if (settled) return;
+            reject(err);
+          });
+          peer.on("disconnected", () => {
+            if (!settled) reject(new Error("Broker disconnected before open"));
+          });
+        }),
+      "host"
+    );
   }
 
   async join(hostId: string): Promise<void> {
     this.dispose();
-    return new Promise((resolve, reject) => {
-      const peer = new Peer();
-      this.peer = peer;
-      this.role = "joining";
-      this.listeners.onRoleChange?.("joining", { peerId: hostId });
-      peer.on("open", (id: string) => {
-        this.myId = id;
-        const conn = peer.connect(hostId, { reliable: false, serialization: "json" });
-        conn.on("open", () => {
-          this.bindConnection(conn);
-          this.role = "connected";
-          this.listeners.onRoleChange?.("connected", { myId: id, peerId: hostId });
-          resolve();
-        });
-        conn.on("error", (err: Error) => reject(err));
-      });
-      peer.on("error", (err: Error) => {
-        this.listeners.onRoleChange?.("offline", { error: err.message });
-        reject(err);
-      });
-    });
+    return this.withRetry(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          const peer = new Peer(PEER_OPTIONS);
+          this.peer = peer;
+          this.role = "joining";
+          this.listeners.onRoleChange?.("joining", { peerId: hostId });
+          let settled = false;
+          peer.on("open", (id: string) => {
+            this.myId = id;
+            const conn = peer.connect(hostId, { reliable: false, serialization: "json" });
+            const connTimeout = window.setTimeout(() => {
+              if (!settled) {
+                settled = true;
+                reject(new Error("Peer did not respond — check the room code"));
+              }
+            }, 12000);
+            conn.on("open", () => {
+              if (settled) return;
+              settled = true;
+              window.clearTimeout(connTimeout);
+              this.bindConnection(conn);
+              this.role = "connected";
+              this.listeners.onRoleChange?.("connected", { myId: id, peerId: hostId });
+              resolve();
+            });
+            conn.on("error", (err: Error) => {
+              if (settled) return;
+              settled = true;
+              window.clearTimeout(connTimeout);
+              reject(err);
+            });
+          });
+          peer.on("error", (err: Error) => {
+            if (!settled) {
+              settled = true;
+              reject(err);
+            }
+          });
+        }),
+      "join"
+    );
+  }
+
+  private async withRetry<T>(attempt: () => Promise<T>, label: string, maxAttempts = 3): Promise<T> {
+    let lastErr: Error | null = null;
+    for (let i = 0; i < maxAttempts; i += 1) {
+      try {
+        const value = await attempt();
+        return value;
+      } catch (err) {
+        lastErr = err as Error;
+        this.dispose();
+        if (i < maxAttempts - 1) {
+          this.listeners.onRoleChange?.("offline", {
+            error: `${label} attempt ${i + 1}/${maxAttempts} failed (${lastErr.message}). Retrying...`
+          });
+          await sleep(900 * (i + 1));
+        }
+      }
+    }
+    const finalErr = lastErr ?? new Error("Unknown network error");
+    this.listeners.onRoleChange?.("offline", { error: friendlyError(finalErr) });
+    throw new Error(friendlyError(finalErr));
   }
 
   private bindConnection(conn: DataConnection) {
