@@ -142,6 +142,7 @@ class SunlitPatrol {
   private readonly remotePlayers = new Map<string, RemotePlayer>();
   private netStateTimer = 0;
   private mpMode = false;
+  private characterTemplate: THREE.Object3D | null = null;
   private paused = false;
   private lastWaveShown = 0;
   private readonly touch = new TouchControls();
@@ -419,7 +420,7 @@ class SunlitPatrol {
   private handleRemoteState(peerId: string, state: PeerStatePayload) {
     let rp = this.remotePlayers.get(peerId);
     if (!rp) {
-      rp = new RemotePlayer(peerId);
+      rp = new RemotePlayer(peerId, this.characterTemplate ?? undefined);
       this.remotePlayers.set(peerId, rp);
       this.scene.add(rp.group);
     }
@@ -508,6 +509,8 @@ class SunlitPatrol {
     model.position.y -= bounds.min.y - center.y;
     this.player.add(model);
     this.player.position.set(0, 0, -50);
+    // Save a pre-toonified template clone for remote players (so they match your look, just tinted ally blue)
+    this.characterTemplate = model.clone(true);
     this.toonify(model, { shadowColor: "#3a2f48", steps: 4, rimStrength: 0.18 });
     const shadow = createContactShadow();
     shadow.position.set(0, 0.02, 0);

@@ -45,7 +45,13 @@ export class HUDManager {
   }
 
   setHealth(value: number) {
-    this.health.textContent = `${value}`;
+    const clamped = Math.max(0, Math.min(100, value));
+    this.health.textContent = `${Math.round(clamped)}`;
+    const fill = document.getElementById("healthFill");
+    if (fill) {
+      fill.style.width = `${clamped}%`;
+      fill.classList.toggle("low", clamped <= 30);
+    }
   }
 
   setStatus(message: string) {
