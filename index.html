@@ -15,6 +15,25 @@
       <div id="shotBeam" class="shot-beam" aria-hidden="true"></div>
       <div id="shotFlash" class="shot-flash" aria-hidden="true"></div>
       <pre id="debugPanel" class="debug-panel" aria-hidden="true"></pre>
+      <div id="waveBanner" class="wave-banner" aria-hidden="true">
+        <div class="wave-banner-label">Wave</div>
+        <div id="waveBannerNumber" class="wave-banner-number">1</div>
+        <div id="waveBannerTitle" class="wave-banner-title">Recon</div>
+      </div>
+      <div id="comboBadge" class="combo-badge" aria-hidden="true">
+        <span class="combo-label">Combo</span>
+        <span id="comboMult" class="combo-mult">×1.00</span>
+        <span id="comboKills" class="combo-kills">1 kill</span>
+      </div>
+      <div id="pauseMenu" class="pause-menu" aria-hidden="true">
+        <div class="pause-card">
+          <h2>Paused</h2>
+          <button id="pauseResume" type="button" class="pause-btn">Resume</button>
+          <button id="pauseRestart" type="button" class="pause-btn secondary">Restart Wave</button>
+          <button id="pauseQuit" type="button" class="pause-btn subtle">Back to Lobby</button>
+          <p class="pause-hint">Esc to resume</p>
+        </div>
+      </div>
       <header class="hud hud-top">
         <div class="brand">
           <strong>Sunlit Patrol</strong>
@@ -53,8 +72,11 @@
           <span>G</span><b>Grenade</b>
           <span>C / Ctrl</span><b>Crouch</b>
           <span>Shift + W</span><b>Sprint</b>
+          <span>Shift + W + C</span><b>Slide</b>
+          <span>Q / E</span><b>Lean</b>
           <span>Space</span><b>Jump</b>
           <span>V</span><b>View</b>
+          <span>1 / 2 / 3</span><b>Weapon</b>
           <span>H / ?</span><b>Controls</b>
           <span>F3</span><b>Debug</b>
         </div>
@@ -62,6 +84,42 @@
       <div id="loader" class="loader">
         <div class="loader-mark"></div>
         <p>Preparing the range</p>
+      </div>
+      <div id="lobby" class="lobby" aria-hidden="false">
+        <div class="lobby-card">
+          <h1>Sunlit Patrol</h1>
+          <p class="lobby-tagline">Anime-style tactical arena shooter</p>
+          <div class="lobby-modes">
+            <button id="lobbySolo" class="lobby-btn solo" type="button">
+              <span class="lobby-btn-title">Solo · Waves</span>
+              <span class="lobby-btn-sub">Face escalating enemy waves</span>
+            </button>
+            <button id="lobbyHost" class="lobby-btn host" type="button">
+              <span class="lobby-btn-title">Host 1v1</span>
+              <span class="lobby-btn-sub">Create room, share code</span>
+            </button>
+            <button id="lobbyJoin" class="lobby-btn join" type="button">
+              <span class="lobby-btn-title">Join 1v1</span>
+              <span class="lobby-btn-sub">Enter a friend's room code</span>
+            </button>
+          </div>
+          <div id="lobbyHostPanel" class="lobby-panel" hidden>
+            <button id="lobbyHostClose" class="lobby-close" type="button" aria-label="Cancel host">×</button>
+            <p class="lobby-panel-hint">Share this code with your friend:</p>
+            <div class="lobby-code-row">
+              <code id="lobbyHostCode">—</code>
+              <button id="lobbyHostCopy" type="button" class="lobby-secondary">Copy</button>
+            </div>
+            <p class="lobby-panel-status" id="lobbyHostStatus">Waiting for friend to join...</p>
+          </div>
+          <div id="lobbyJoinPanel" class="lobby-panel" hidden>
+            <button id="lobbyJoinClose" class="lobby-close" type="button" aria-label="Cancel join">×</button>
+            <p class="lobby-panel-hint">Enter the host's room code:</p>
+            <input id="lobbyJoinCode" class="lobby-input" type="text" placeholder="xxxx-xxxx-xxxx" autocomplete="off" />
+            <button id="lobbyJoinSubmit" type="button" class="lobby-primary">Connect</button>
+            <p class="lobby-panel-status" id="lobbyJoinStatus"></p>
+          </div>
+        </div>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

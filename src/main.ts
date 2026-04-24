@@ -13,7 +13,9 @@ import {
   rokokoRifleActionClipAliases,
   runtimeAssets,
   thirdPersonWeaponSocket,
-  type ActionName
+  weaponLoadout,
+  type ActionName,
+  type WeaponId
 } from "./game/config";
 import { AnimationController } from "./game/AnimationController";
 import { AudioEngine } from "./game/AudioEngine";
@@ -22,8 +24,21 @@ import { EffectManager } from "./game/EffectManager";
 import { HUDManager } from "./game/HUDManager";
 import { InputManager } from "./game/InputManager";
 import { palette } from "./game/palette";
+import { animePalette } from "./game/anime/palette";
+import { AnimeEffects } from "./game/anime/AnimeEffects";
 import { ProjectileSystem } from "./game/ProjectileSystem";
-import { createWorld, setupLights } from "./game/world";
+import { createWorld, setupLights, updateSakuraDrifts, updateArenaProps } from "./game/world";
+import { applyRendererProfile, buildQualityProfile, detectQualityTier } from "./game/rendering/QualityTier";
+import { PostFX } from "./game/rendering/PostFX";
+import { createStylizedSky } from "./game/rendering/StylizedSky";
+import { applyToonToObject, type ToonOptions } from "./game/rendering/ToonMaterial";
+import { animeWeaponFactories } from "./game/anime/weapons";
+import { createContactShadow } from "./game/anime/groundOverlay";
+import { EnemyManager } from "./game/enemies/EnemyManager";
+import type { Enemy } from "./game/enemies/Enemy";
+import { NetworkManager, type PeerStatePayload } from "./game/net/NetworkManager";
+import { RemotePlayer } from "./game/net/RemotePlayer";
+import { TouchControls } from "./game/TouchControls";
 import type {
   AimTrace,
   CameraMode,
@@ -115,6 +130,23 @@ class SunlitPatrol {
   private readonly projectiles = new ProjectileSystem(this.scene);
   private readonly grenades: Grenade[] = [];
   private readonly effects = new EffectManager(this.scene, this.camera);
+  private readonly animeFx = new AnimeEffects(this.scene);
+  private readonly enemies = new EnemyManager(
+    this.scene,
+    () => this.clock.elapsedTime,
+    () => this.player.position
+  );
+  private kill_streak = 0;
+  private killStreakTimer = 0;
+  private readonly network = new NetworkManager();
+  private readonly remotePlayers = new Map<string, RemotePlayer>();
+  private netStateTimer = 0;
+  private mpMode = false;
+  private paused = false;
+  private lastWaveShown = 0;
+  private readonly touch = new TouchControls();
+  private readonly quality = buildQualityProfile(detectQualityTier());
+  private readonly postfx: PostFX;
   private readonly tmpVec = new THREE.Vector3();
   private readonly tmpVec2 = new THREE.Vector3();
   private readonly tmpQuat = new THREE.Quaternion();
@@ -137,7 +169,6 @@ class SunlitPatrol {
   private yaw = 0;
   private pitch = -0.08;
   private score = 0;
-  private ammo = 12;
   private health = 100;
   private shotCooldown = 0;
   private reloadTimer = 0;
@@ -159,17 +190,44 @@ class SunlitPatrol {
   private frameSequence = 0;
   private debugLiveTimer = 0;
   private cameraMode: CameraMode = "third";
+  private currentWeaponId: WeaponId = "rifle";
+  private readonly weaponAmmo: Record<WeaponId, number> = {
+    rifle: weaponLoadout.rifle.magSize,
+    pistol: weaponLoadout.pistol.magSize,
+    smg: weaponLoadout.smg.magSize
+  };
+  private readonly weaponGroups: Partial<Record<WeaponId, THREE.Group>> = {};
+  private slideTimer = 0;
+  private slideVelocity = new THREE.Vector3();
+  private leanAmount = 0;
+  private leanTarget = 0;
+  private timeScale = 1;
+  private sprintFovBoost = 0;
+
+  private get activeTuning() {
+    return weaponLoadout[this.currentWeaponId];
+  }
+
+  private get ammo() {
+    return this.weaponAmmo[this.currentWeaponId];
+  }
+
+  private set ammo(value: number) {
+    this.weaponAmmo[this.currentWeaponId] = value;
+  }
 
   constructor() {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    this.renderer.toneMapping = THREE.NoToneMapping;
+    this.renderer.toneMappingExposure = 1.0;
+    applyRendererProfile(this.renderer, this.quality);
     this.syncVolumeUi();
 
-    this.scene.background = palette.sky;
-    this.scene.fog = new THREE.Fog(palette.sky, 46, 142);
+    this.scene.background = animePalette.sky;
+    this.scene.fog = new THREE.Fog("#d8e8f5", 95, 210);
+    this.scene.add(createStylizedSky());
     this.camera.position.set(0, 4, 8);
+    this.postfx = new PostFX(this.renderer, this.scene, this.camera, this.quality);
 
     this.player.name = "Player";
     this.weaponSocket.name = "WeaponSocket";
@@ -185,12 +243,230 @@ class SunlitPatrol {
   async init() {
     await this.loadPlayer();
     await this.loadWeaponAndTargets();
+    await this.precompileShaders();
     this.isReady = true;
     hud.hideLoader();
-    this.setStatus("Range online");
+    this.bindLobby();
     if (this.debug.isEnabled()) this.renderDebugPanel();
     this.updateHud();
     this.renderer.setAnimationLoop(() => this.update());
+  }
+
+  private bindLobby() {
+    const lobby = document.getElementById("lobby");
+    const soloBtn = document.getElementById("lobbySolo") as HTMLButtonElement | null;
+    const hostBtn = document.getElementById("lobbyHost") as HTMLButtonElement | null;
+    const joinBtn = document.getElementById("lobbyJoin") as HTMLButtonElement | null;
+    const hostPanel = document.getElementById("lobbyHostPanel");
+    const joinPanel = document.getElementById("lobbyJoinPanel");
+    const hostCode = document.getElementById("lobbyHostCode");
+    const hostCopy = document.getElementById("lobbyHostCopy") as HTMLButtonElement | null;
+    const hostStatus = document.getElementById("lobbyHostStatus");
+    const joinInput = document.getElementById("lobbyJoinCode") as HTMLInputElement | null;
+    const joinSubmit = document.getElementById("lobbyJoinSubmit") as HTMLButtonElement | null;
+    const joinStatus = document.getElementById("lobbyJoinStatus");
+    if (!lobby || !soloBtn || !hostBtn || !joinBtn) return;
+
+    const hideLobby = () => {
+      lobby.setAttribute("aria-hidden", "true");
+    };
+    const showPanel = (panel: HTMLElement | null) => {
+      hostPanel?.setAttribute("hidden", "");
+      joinPanel?.setAttribute("hidden", "");
+      if (panel) panel.removeAttribute("hidden");
+    };
+
+    this.network.on({
+      onRoleChange: (role, info) => {
+        if (role === "host-ready" && info?.myId && hostCode) {
+          hostCode.textContent = info.myId;
+        }
+        if (role === "connected") {
+          if (hostStatus) hostStatus.textContent = "Peer connected — entering arena...";
+          if (joinStatus) joinStatus.textContent = "Connected!";
+          this.mpMode = true;
+          this.enemies.reset();
+          this.setStatus("Multiplayer match live");
+          window.setTimeout(hideLobby, 650);
+        }
+        if (role === "offline" && info?.error) {
+          if (hostStatus) hostStatus.textContent = `Error: ${info.error}`;
+          if (joinStatus) joinStatus.textContent = `Error: ${info.error}`;
+        }
+      },
+      onState: (peerId, state) => this.handleRemoteState(peerId, state),
+      onFire: (peerId, fire) => {
+        void peerId;
+        const origin = new THREE.Vector3(...fire.origin);
+        const dir = new THREE.Vector3(...fire.direction);
+        const end = origin.clone().addScaledVector(dir, 24);
+        this.effects.spawnTracer(origin, end);
+        this.animeFx.spawnMuzzleBurst(origin, dir);
+      },
+      onPeerDisconnect: (peerId) => {
+        const rp = this.remotePlayers.get(peerId);
+        if (rp) {
+          this.scene.remove(rp.group);
+          rp.dispose();
+          this.remotePlayers.delete(peerId);
+        }
+        this.setStatus("Peer disconnected");
+      }
+    });
+
+    soloBtn.addEventListener("click", () => {
+      this.startSolo();
+      hideLobby();
+    });
+
+    hostBtn.addEventListener("click", async () => {
+      showPanel(hostPanel);
+      if (hostStatus) hostStatus.textContent = "Generating room code...";
+      try {
+        await this.network.host();
+        if (hostStatus) hostStatus.textContent = "Room ready — waiting for friend...";
+        // Start game arena so host can move around while waiting
+        this.startSolo(/* waves */ false);
+      } catch (err) {
+        if (hostStatus) hostStatus.textContent = `Failed: ${(err as Error).message}`;
+      }
+    });
+
+    hostCopy?.addEventListener("click", async () => {
+      const code = hostCode?.textContent?.trim() ?? "";
+      if (!code || code === "—") return;
+      try {
+        await navigator.clipboard.writeText(code);
+        if (hostStatus) hostStatus.textContent = "Copied. Share and wait for friend.";
+      } catch {
+        if (hostStatus) hostStatus.textContent = "Copy failed — select code manually.";
+      }
+    });
+
+    joinBtn.addEventListener("click", () => {
+      showPanel(joinPanel);
+      joinInput?.focus();
+    });
+
+    joinSubmit?.addEventListener("click", async () => {
+      const code = joinInput?.value.trim();
+      if (!code) {
+        if (joinStatus) joinStatus.textContent = "Paste the host's code first.";
+        return;
+      }
+      if (joinStatus) joinStatus.textContent = "Connecting...";
+      try {
+        await this.network.join(code);
+      } catch (err) {
+        if (joinStatus) joinStatus.textContent = `Failed: ${(err as Error).message}`;
+      }
+    });
+
+    document.getElementById("lobbyHostClose")?.addEventListener("click", () => {
+      this.network.dispose();
+      this.mpMode = false;
+      showPanel(null);
+      if (hostStatus) hostStatus.textContent = "Waiting for friend to join...";
+      if (hostCode) hostCode.textContent = "—";
+    });
+    document.getElementById("lobbyJoinClose")?.addEventListener("click", () => {
+      this.network.dispose();
+      this.mpMode = false;
+      showPanel(null);
+      if (joinStatus) joinStatus.textContent = "";
+    });
+  }
+
+  private startSolo(withWaves = true) {
+    if (withWaves) {
+      this.setStatus("Wave 1 incoming...");
+      this.enemies.scheduleFirstWave(2.5);
+    } else {
+      this.setStatus("Arena warmed up — waiting for peer");
+    }
+    hud.onPauseMenu({
+      resume: () => this.togglePause(false),
+      restart: () => {
+        this.enemies.reset();
+        this.lastWaveShown = 0;
+        this.kill_streak = 0;
+        this.health = 100;
+        hud.setHealth(this.health);
+        this.enemies.scheduleFirstWave(1.5);
+        this.togglePause(false);
+        this.setStatus("Range reset");
+      },
+      quit: () => {
+        this.togglePause(false);
+        this.enemies.reset();
+        this.lastWaveShown = 0;
+        const lobby = document.getElementById("lobby");
+        lobby?.setAttribute("aria-hidden", "false");
+        if (document.pointerLockElement) document.exitPointerLock();
+      }
+    });
+  }
+
+  private togglePause(force?: boolean) {
+    const next = force !== undefined ? force : !this.paused;
+    this.paused = next;
+    hud.setPause(next);
+    if (next && document.pointerLockElement) {
+      document.exitPointerLock();
+    }
+  }
+
+  private handleRemoteState(peerId: string, state: PeerStatePayload) {
+    let rp = this.remotePlayers.get(peerId);
+    if (!rp) {
+      rp = new RemotePlayer(peerId);
+      this.remotePlayers.set(peerId, rp);
+      this.scene.add(rp.group);
+    }
+    rp.applyState(state);
+  }
+
+  private broadcastLocalState() {
+    if (!this.mpMode || this.network.role !== "connected") return;
+    const payload: PeerStatePayload = {
+      type: "state",
+      t: performance.now(),
+      pos: [this.player.position.x, this.player.position.y, this.player.position.z],
+      yaw: this.yaw,
+      pitch: this.pitch,
+      weaponId: this.currentWeaponId,
+      health: this.health,
+      sprinting: this.input.isKeyDown("ShiftLeft"),
+      sliding: this.slideTimer > 0,
+      crouch: this.crouchBlend
+    };
+    this.network.broadcast(payload);
+  }
+
+  private broadcastFire(origin: THREE.Vector3, direction: THREE.Vector3) {
+    if (!this.mpMode || this.network.role !== "connected") return;
+    this.network.broadcast({
+      type: "fire",
+      t: performance.now(),
+      origin: [origin.x, origin.y, origin.z],
+      direction: [direction.x, direction.y, direction.z],
+      weaponId: this.currentWeaponId
+    });
+  }
+
+  private async precompileShaders() {
+    try {
+      const maybeAsync = (this.renderer as unknown as {
+        compileAsync?: (scene: THREE.Scene, camera: THREE.Camera) => Promise<void>;
+      }).compileAsync;
+      if (typeof maybeAsync === "function") {
+        await maybeAsync.call(this.renderer, this.scene, this.camera);
+      } else {
+        this.renderer.compile(this.scene, this.camera);
+      }
+    } catch (error) {
+      console.warn("Shader precompile failed", error);
+    }
   }
 
   private async loadPlayer() {
@@ -232,6 +508,11 @@ class SunlitPatrol {
     model.position.y -= bounds.min.y - center.y;
     this.player.add(model);
     this.player.position.set(0, 0, -50);
+    this.toonify(model, { shadowColor: "#3a2f48", steps: 4, rimStrength: 0.18 });
+    const shadow = createContactShadow();
+    shadow.position.set(0, 0.02, 0);
+    shadow.scale.set(1.5, 1.5, 1);
+    this.player.add(shadow);
 
     const mixer = new THREE.AnimationMixer(model);
     this.animation.setMixer(mixer);
@@ -273,25 +554,35 @@ class SunlitPatrol {
       )
     ]);
 
-    this.weapon = this.prepareThirdPersonWeapon(tacticalRifle, weaponGltf.scene);
-    this.weapon.scale.multiplyScalar(this.rightHandBone ? thirdPersonWeaponSocket.scale : fallbackWeaponSocket.scale);
-    this.weapon.traverse((child) => {
-      if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh;
-        mesh.castShadow = true;
-        this.tuneMaterial(mesh.material);
-      }
-    });
+    void tacticalRifle;
+    void weaponGltf;
     if (this.rightHandBone) {
-      this.weaponSocket.position.copy(thirdPersonWeaponSocket.position);
-      this.weaponSocket.rotation.copy(thirdPersonWeaponSocket.rotation);
+      // Procedural anime weapons are authored at ~1m scale; hand bone scale is large (unit-space), so shrink.
+      this.weaponSocket.position.set(0.02, 0.02, 0.04);
+      this.weaponSocket.rotation.set(
+        THREE.MathUtils.degToRad(-6),
+        THREE.MathUtils.degToRad(-88),
+        THREE.MathUtils.degToRad(8)
+      );
+      this.weaponSocket.scale.setScalar(0.58);
       this.rightHandBone.add(this.weaponSocket);
     } else {
-      this.weaponSocket.position.copy(fallbackWeaponSocket.position);
-      this.weaponSocket.rotation.copy(fallbackWeaponSocket.rotation);
+      this.weaponSocket.position.set(-0.42, 0.84, 0.34);
+      this.weaponSocket.rotation.set(0.08, -Math.PI * 0.5, -0.05);
+      this.weaponSocket.scale.setScalar(1.0);
       this.player.add(this.weaponSocket);
     }
-    this.weaponSocket.add(this.weapon);
+    // Procedural anime weapons — sakura rifle, neon pistol, cyan SMG
+    const ids: WeaponId[] = ["rifle", "pistol", "smg"];
+    for (const id of ids) {
+      const group = animeWeaponFactories[id]();
+      // Orient barrel forward along socket's -Z so it extends away from character
+      group.position.set(0, 0, -0.2);
+      group.visible = id === "rifle";
+      this.weaponSocket.add(group);
+      this.weaponGroups[id] = group;
+    }
+    this.weapon = this.weaponGroups.rifle ?? null;
     this.setupFirstPersonRig(firstPersonRifle);
 
     this.bulletTemplate = bulletGltf.scene;
@@ -352,6 +643,7 @@ class SunlitPatrol {
       };
       meshes.forEach((mesh) => this.targetByMesh.set(mesh, target));
       this.targets.push(target);
+      this.toonify(root, { shadowColor: "#3a1f2e", steps: 3, rimColor: "#ff9ec6", rimStrength: 0.25, rimWidth: 0.4 });
       this.scene.add(root);
     });
 
@@ -365,14 +657,7 @@ class SunlitPatrol {
       crate.position.set(x as number, 0, z as number);
       crate.rotation.y = Math.random() * Math.PI;
       this.placeObjectOnGround(crate);
-      crate.traverse((child) => {
-        if ((child as THREE.Mesh).isMesh) {
-          const mesh = child as THREE.Mesh;
-          mesh.castShadow = true;
-          mesh.receiveShadow = true;
-          this.tuneMaterial(mesh.material);
-        }
-      });
+      this.toonify(crate, { shadowColor: "#4a3420", steps: 3, rimStrength: 0.12 });
       this.scene.add(crate);
     });
   }
@@ -397,30 +682,53 @@ class SunlitPatrol {
     }
   }
 
-  private setupFirstPersonRig(gltf: GLTF) {
-    this.firstPersonRig = gltf.scene;
-    this.firstPersonRig.name = "FirstPersonRifleHands";
-    this.firstPersonRig.position.set(0.72, -0.95, -2.2);
-    this.firstPersonRig.rotation.set(THREE.MathUtils.degToRad(1), THREE.MathUtils.degToRad(-6), THREE.MathUtils.degToRad(0));
-    this.firstPersonRig.scale.setScalar(0.1);
-    this.firstPersonRig.visible = false;
-    this.firstPersonRig.traverse((child) => {
-      if (!(child as THREE.Mesh).isMesh) return;
-      const mesh = child as THREE.Mesh;
-      mesh.castShadow = false;
-      mesh.receiveShadow = false;
-      mesh.frustumCulled = false;
-      this.tuneMaterial(mesh.material);
+  private toonify(root: THREE.Object3D, options: ToonOptions = {}) {
+    applyToonToObject(root, {
+      shadowColor: "#3f4b5a",
+      steps: 4,
+      rimColor: "#ffeccf",
+      rimStrength: 0.14,
+      rimWidth: 0.38,
+      ...options
     });
+    root.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.castShadow = mesh.userData.noCastShadow ? false : true;
+      mesh.receiveShadow = mesh.userData.noReceiveShadow ? false : true;
+    });
+  }
+
+  private readonly fpsWeaponGroups: Partial<Record<WeaponId, THREE.Group>> = {};
+
+  private setupFirstPersonRig(gltf: GLTF) {
+    // Ignore shipped GLTF rig — replace with procedural anime weapons parented to camera.
+    void gltf;
+    this.firstPersonRig = new THREE.Group();
+    this.firstPersonRig.name = "FirstPersonAnimeRig";
+    this.firstPersonRig.position.set(0.22, -0.32, -0.55);
+    this.firstPersonRig.rotation.set(
+      THREE.MathUtils.degToRad(-2),
+      THREE.MathUtils.degToRad(-8),
+      THREE.MathUtils.degToRad(0)
+    );
+    this.firstPersonRig.visible = false;
     this.camera.add(this.firstPersonRig);
     this.scene.add(this.camera);
 
-    if (gltf.animations.length > 0) {
-      this.firstPersonMixer = new THREE.AnimationMixer(this.firstPersonRig);
-      const fireClip = THREE.AnimationClip.findByName(gltf.animations, "fire") ?? gltf.animations[0];
-      this.firstPersonFireAction = this.firstPersonMixer.clipAction(fireClip);
-      this.firstPersonFireAction.setLoop(THREE.LoopOnce, 1);
-      this.firstPersonFireAction.clampWhenFinished = false;
+    const ids: WeaponId[] = ["rifle", "pistol", "smg"];
+    for (const id of ids) {
+      const weapon = animeWeaponFactories[id]();
+      weapon.visible = id === "rifle";
+      weapon.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        mesh.castShadow = false;
+        mesh.receiveShadow = false;
+        mesh.frustumCulled = false;
+      });
+      this.firstPersonRig.add(weapon);
+      this.fpsWeaponGroups[id] = weapon;
     }
   }
 
@@ -442,6 +750,68 @@ class SunlitPatrol {
       this.tuneMaterial(mesh.material);
     });
     return weapon;
+  }
+
+  private registerAlternateWeapons() {
+    if (!this.weapon) return;
+    const altConfigs: Array<{ id: WeaponId; tint: string; scaleMul: number; yOffset: number }> = [
+      { id: "pistol", tint: weaponLoadout.pistol.tint, scaleMul: 0.68, yOffset: 0 },
+      { id: "smg", tint: weaponLoadout.smg.tint, scaleMul: 0.86, yOffset: 0 }
+    ];
+    for (const { id, tint, scaleMul, yOffset } of altConfigs) {
+      const clone = this.weapon.clone(true);
+      clone.name = `Weapon_${id}`;
+      clone.scale.multiplyScalar(scaleMul);
+      clone.position.y += yOffset;
+      clone.visible = false;
+      // Replace materials with tinted toon so each weapon reads differently
+      clone.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        mesh.material = Array.isArray(mesh.material)
+          ? mesh.material.map((m) => m.clone())
+          : mesh.material.clone();
+        mesh.castShadow = true;
+      });
+      this.toonify(clone, {
+        color: tint,
+        shadowColor: "#18181d",
+        steps: 3,
+        rimColor: "#fff1d8",
+        rimStrength: 0.32,
+        rimWidth: 0.35
+      });
+      // Tint any MeshBasicMaterial color overrides back to tint so the clone visually differs
+      clone.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const mat = mesh.material;
+        if (Array.isArray(mat)) mat.forEach((m) => "color" in m && (m as THREE.MeshStandardMaterial).color.set(tint));
+        else if (mat && "color" in mat) (mat as THREE.MeshStandardMaterial).color.set(tint);
+      });
+      this.weaponSocket.add(clone);
+      this.weaponGroups[id] = clone;
+    }
+  }
+
+  private switchWeapon(id: WeaponId) {
+    if (this.currentWeaponId === id) return;
+    if (!this.weaponGroups[id]) return;
+    if (this.reloadTimer > 0) return;
+    const prev = this.currentWeaponId;
+    const prevGroup = this.weaponGroups[prev];
+    const prevFps = this.fpsWeaponGroups[prev];
+    if (prevGroup) prevGroup.visible = false;
+    if (prevFps) prevFps.visible = false;
+    this.currentWeaponId = id;
+    const nextGroup = this.weaponGroups[id];
+    const nextFps = this.fpsWeaponGroups[id];
+    if (nextGroup) nextGroup.visible = true;
+    if (nextFps) nextFps.visible = true;
+    this.weapon = nextGroup ?? this.weapon;
+    this.shotCooldown = 0.1;
+    this.setStatus(`${this.activeTuning.displayName} equipped`);
+    this.updateHud();
   }
 
   private applyWeaponMaterialPalette(mesh: THREE.Mesh) {
@@ -500,6 +870,11 @@ class SunlitPatrol {
       onReload: () => this.reload(),
       onGrenade: () => this.throwGrenade(),
       onJump: () => this.jump(),
+      onWeaponSlot: (slot) => {
+        const map: Record<1 | 2 | 3, WeaponId> = { 1: "rifle", 2: "pistol", 3: "smg" };
+        this.switchWeapon(map[slot]);
+      },
+      onPause: () => this.togglePause(),
       onToggleDebug: () => this.setDebugEnabled(!this.debug.isEnabled()),
 
       onToggleCamera: () => this.toggleCameraMode(),
@@ -560,6 +935,17 @@ class SunlitPatrol {
       this.sound.setVolume(normalized);
       this.syncVolumeUi();
     });
+
+    this.touch.setHandlers({
+      onFirePress: () => {
+        this.sound.resume();
+        this.shoot();
+      },
+      onJump: () => this.jump(),
+      onReload: () => this.reload(),
+      onGrenade: () => this.throwGrenade(),
+      onToggleCamera: () => this.toggleCameraMode()
+    });
   }
 
   private resizeRaf = 0;
@@ -572,6 +958,7 @@ class SunlitPatrol {
       this.camera.aspect = width / height;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(width, height, false);
+      this.postfx.setSize(width, height);
     });
   }
 
@@ -583,6 +970,7 @@ class SunlitPatrol {
     this.renderer.setAnimationLoop(null);
     this.input.dispose();
     this.animation.dispose();
+    this.postfx.dispose();
     this.renderer.dispose();
   }
 
@@ -594,9 +982,15 @@ class SunlitPatrol {
   }
 
   private update() {
-    const dt = Math.min(this.clock.getDelta(), 0.05);
+    const rawDt = Math.min(this.clock.getDelta(), 0.05);
+    if (this.paused) {
+      this.postfx.render(rawDt);
+      return;
+    }
+    this.timeScale = THREE.MathUtils.damp(this.timeScale, 1, 6, rawDt);
+    const dt = rawDt * this.timeScale;
     this.frameSequence += 1;
-    this.debugLiveTimer += dt;
+    this.debugLiveTimer += rawDt;
     this.shotCooldown = Math.max(0, this.shotCooldown - dt);
     this.reloadTimer = Math.max(0, this.reloadTimer - dt);
     this.reloadAnimTimer = Math.max(0, this.reloadAnimTimer - dt);
@@ -604,22 +998,36 @@ class SunlitPatrol {
     this.grenadeCooldown = Math.max(0, this.grenadeCooldown - dt);
     this.nextTargetWave = Math.max(0, this.nextTargetWave - dt);
     this.impactPulse = Math.max(0, this.impactPulse - dt * 4);
+    this.slideTimer = Math.max(0, this.slideTimer - dt);
     this.cameraRecoilPitch = THREE.MathUtils.damp(this.cameraRecoilPitch, 0, 13, dt);
     this.cameraRecoilYaw = THREE.MathUtils.damp(this.cameraRecoilYaw, 0, 16, dt);
     this.weaponKick = THREE.MathUtils.damp(this.weaponKick, 0, 18, dt);
     this.weaponKickSide = THREE.MathUtils.damp(this.weaponKickSide, 0, 14, dt);
+    this.updateLean(rawDt);
     if (this.input.isFiring) this.shoot();
 
     this.updatePlayer(dt);
     this.updateWeaponPose(dt);
     this.updateCamera(dt);
     this.updateTargets(dt);
+    this.updateEnemies(dt);
     this.projectiles.update(dt);
     this.updateGrenades(dt);
     this.effects.update(dt);
+    this.animeFx.update(dt);
     this.animation.update(dt);
     this.firstPersonMixer?.update(dt);
-    this.renderer.render(this.scene, this.camera);
+    updateSakuraDrifts(this.scene, dt, this.clock.elapsedTime);
+    updateArenaProps(this.scene, dt, this.clock.elapsedTime);
+    // Remote players interp
+    for (const rp of this.remotePlayers.values()) rp.update(dt);
+    // Broadcast local state at ~20Hz
+    this.netStateTimer -= dt;
+    if (this.netStateTimer <= 0) {
+      this.netStateTimer = 0.05;
+      this.broadcastLocalState();
+    }
+    this.postfx.render(dt);
     if (this.debug.isEnabled() && this.debugLiveTimer >= 0.25) {
       this.debugLiveTimer = 0;
       this.renderDebugPanel();
@@ -627,21 +1035,42 @@ class SunlitPatrol {
   }
 
   private updatePlayer(dt: number) {
-    const forward = Number(this.input.isKeyDown("KeyW") || this.input.isKeyDown("ArrowUp")) - Number(this.input.isKeyDown("KeyS") || this.input.isKeyDown("ArrowDown"));
-    const strafe = Number(this.input.isKeyDown("KeyD") || this.input.isKeyDown("ArrowRight")) - Number(this.input.isKeyDown("KeyA") || this.input.isKeyDown("ArrowLeft"));
+    let forward = Number(this.input.isKeyDown("KeyW") || this.input.isKeyDown("ArrowUp")) - Number(this.input.isKeyDown("KeyS") || this.input.isKeyDown("ArrowDown"));
+    let strafe = Number(this.input.isKeyDown("KeyD") || this.input.isKeyDown("ArrowRight")) - Number(this.input.isKeyDown("KeyA") || this.input.isKeyDown("ArrowLeft"));
+    // Touch joystick contribution
+    if (this.touch.enabled) {
+      if (Math.abs(this.touch.state.moveY) > 0.15) forward = -this.touch.state.moveY;
+      if (Math.abs(this.touch.state.moveX) > 0.15) strafe = this.touch.state.moveX;
+      const look = this.touch.consumeLook();
+      if (look.dx !== 0 || look.dy !== 0) this.applyMouseLook(look.dx, look.dy);
+      if (this.touch.state.firing) this.input.isFiring = true;
+    }
 
-    if (forward !== 0 || strafe !== 0) {
+    const crouching = this.input.isKeyDown("KeyC") || this.input.isKeyDown("ControlLeft") || this.input.isKeyDown("ControlRight");
+    const sprinting = !crouching && this.input.isKeyDown("ShiftLeft") && forward > 0;
+
+    // Slide trigger: sprint + crouch press while moving forward
+    if (sprinting && this.input.isKeyDown("KeyC") && this.slideTimer <= 0 && this.playerVelocity.lengthSq() > 25) {
+      this.triggerSlide();
+    }
+
+    if (this.slideTimer > 0) {
+      this.playerVelocity.copy(this.slideVelocity);
+      this.slideVelocity.multiplyScalar(Math.pow(0.18, dt));
+    } else if (forward !== 0 || strafe !== 0) {
       const sin = Math.sin(this.yaw);
       const cos = Math.cos(this.yaw);
       this.tmpVec.set(sin * forward - cos * strafe, 0, cos * forward + sin * strafe).normalize();
       const movingBackward = forward < 0 && strafe === 0;
-      const crouching = this.input.isKeyDown("KeyC") || this.input.isKeyDown("ControlLeft") || this.input.isKeyDown("ControlRight");
-      const sprinting = !crouching && this.input.isKeyDown("ShiftLeft") && forward > 0;
-      this.playerVelocity.copy(this.tmpVec).multiplyScalar(crouching ? 2.7 : sprinting ? 9.2 : movingBackward ? 4.6 : 7.4);
+      this.playerVelocity.copy(this.tmpVec).multiplyScalar(crouching ? 2.7 : sprinting ? 10.4 : movingBackward ? 4.6 : 7.4);
     } else {
       this.playerVelocity.multiplyScalar(Math.pow(0.002, dt));
       if (this.playerVelocity.lengthSq() < 0.0001) this.playerVelocity.setScalar(0);
     }
+
+    // Sprint FOV boost target
+    const sprintTarget = (sprinting && this.slideTimer <= 0) ? 1 : 0;
+    this.sprintFovBoost = THREE.MathUtils.damp(this.sprintFovBoost, sprintTarget, 6, dt);
 
     this.player.position.addScaledVector(this.playerVelocity, dt);
     this.player.position.x = THREE.MathUtils.clamp(this.player.position.x, -14, 14);
@@ -649,13 +1078,27 @@ class SunlitPatrol {
     this.player.rotation.y = lerpAngle(this.player.rotation.y, this.yaw, 1 - Math.pow(0.001, dt));
 
     const moving = this.playerVelocity.lengthSq() > 0.4;
-    const crouching = this.input.isKeyDown("KeyC") || this.input.isKeyDown("ControlLeft") || this.input.isKeyDown("ControlRight");
-    const sprinting = !crouching && this.input.isKeyDown("ShiftLeft") && this.input.isKeyDown("KeyW");
-    this.crouchBlend = THREE.MathUtils.damp(this.crouchBlend, crouching ? 1 : 0, 12, dt);
+    const isSliding = this.slideTimer > 0;
+    const stanceCrouch = crouching || isSliding;
+    this.crouchBlend = THREE.MathUtils.damp(this.crouchBlend, stanceCrouch ? 1 : 0, 12, dt);
     this.player.scale.set(1, THREE.MathUtils.lerp(1, 0.82, this.crouchBlend), 1);
-    this.updateFootsteps(dt, moving, crouching, sprinting);
+    this.updateFootsteps(dt, moving && !isSliding, stanceCrouch, sprinting);
     if (this.jumpAnimTimer > 0) return;
-    this.animation.fadeTo(crouching ? (moving ? "CrouchWalk" : "CrouchIdle") : sprinting && moving ? "Sprint" : moving ? "Run" : "Idle");
+    this.animation.fadeTo(stanceCrouch ? (moving ? "CrouchWalk" : "CrouchIdle") : sprinting && moving ? "Sprint" : moving ? "Run" : "Idle");
+  }
+
+  private triggerSlide() {
+    this.slideTimer = 0.55;
+    this.slideVelocity.copy(this.playerVelocity).multiplyScalar(1.55);
+    this.sound.playFootstep(true, this.footstepSide);
+    this.triggerScreenShake(0.12);
+  }
+
+  private updateLean(dt: number) {
+    const leanLeft = this.input.isKeyDown("KeyQ") ? 1 : 0;
+    const leanRight = this.input.isKeyDown("KeyE") ? 1 : 0;
+    this.leanTarget = leanRight - leanLeft;
+    this.leanAmount = THREE.MathUtils.damp(this.leanAmount, this.leanTarget, 10, dt);
   }
 
   private updateFootsteps(dt: number, moving: boolean, crouching: boolean, sprinting: boolean) {
@@ -715,8 +1158,11 @@ class SunlitPatrol {
         this.camera.position.y + forward.y * 10,
         this.camera.position.z + forward.z * 10
       );
-      const targetFov = this.input.isAimingDownSights ? cameraTuning.firstPerson.adsFov : cameraTuning.firstPerson.hipFov;
+      const baseTargetFov = this.input.isAimingDownSights ? cameraTuning.firstPerson.adsFov : cameraTuning.firstPerson.hipFov;
+      const slideBoost = this.slideTimer > 0 ? 8 : 0;
+      const targetFov = baseTargetFov + this.sprintFovBoost * 9 + slideBoost;
       this.camera.fov = THREE.MathUtils.damp(this.camera.fov, targetFov, 10, dt);
+      this.applyCameraLean(dt);
       this.camera.updateProjectionMatrix();
       return;
     }
@@ -733,8 +1179,89 @@ class SunlitPatrol {
     ).addScaledVector(right, cameraTuning.thirdPerson.shoulderOffset);
     this.camera.position.lerp(desired, 1 - Math.pow(0.00002, dt));
     this.camera.lookAt(this.camera.position.clone().addScaledVector(forward, 10));
-    this.camera.fov = THREE.MathUtils.damp(this.camera.fov, 48, 8, dt);
+    const tpsFov = 48 + this.sprintFovBoost * 5 + (this.slideTimer > 0 ? 4 : 0);
+    this.camera.fov = THREE.MathUtils.damp(this.camera.fov, tpsFov, 8, dt);
+    this.applyCameraLean(dt);
     this.camera.updateProjectionMatrix();
+    this.applyScreenShake(dt);
+  }
+
+  private applyCameraLean(dt: number) {
+    if (Math.abs(this.leanAmount) < 0.001) return;
+    const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
+    const leanOffset = this.leanAmount * 0.45;
+    this.camera.position.addScaledVector(right, leanOffset);
+    const forwardDir = new THREE.Vector3().subVectors(this.camera.position, this.camera.position).negate();
+    // Apply roll tilt to camera — Z-axis rotation
+    this.camera.rotation.z = -this.leanAmount * 0.18;
+    void forwardDir;
+    void dt;
+  }
+
+  private applyScreenShake(dt: number) {
+    if (this.screenShakeAmount <= 0.001) return;
+    const shake = this.screenShakeAmount;
+    const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw)).normalize();
+    const up = new THREE.Vector3(0, 1, 0);
+    this.camera.position.addScaledVector(right, (Math.random() - 0.5) * shake * 0.2);
+    this.camera.position.addScaledVector(up, (Math.random() - 0.5) * shake * 0.18);
+    this.screenShakeAmount = THREE.MathUtils.damp(this.screenShakeAmount, 0, 10, dt);
+  }
+
+  private updateEnemies(dt: number) {
+    const events = this.enemies.update(dt);
+    // Enemy fire events — simple "tracer toward player" VFX
+    for (const { enemy, fireDirection } of events) {
+      const origin = enemy.getWorldCenter();
+      const target = origin.clone().addScaledVector(fireDirection, 22);
+      this.effects.spawnTracer(origin, target);
+      this.animeFx.spawnMuzzleBurst(origin, fireDirection);
+      // Damage player if close enough and roughly aimed
+      const playerDir = new THREE.Vector3().subVectors(this.player.position, origin).normalize();
+      const aimDot = playerDir.dot(fireDirection);
+      if (aimDot > 0.92) {
+        this.applyDamageToPlayer(enemy.archetype.damagePerSec * 0.25);
+      }
+    }
+    // Kill streak timer decay
+    if (this.killStreakTimer > 0) {
+      this.killStreakTimer = Math.max(0, this.killStreakTimer - dt);
+      if (this.killStreakTimer <= 0) this.kill_streak = 0;
+    }
+    // HUD objective — show wave info
+    if (this.enemies.isInBreak) {
+      hud.setObjective(`Wave ${this.enemies.currentWave} cleared — next in ${Math.ceil(this.enemies.nextWaveSecs)}s`);
+    } else {
+      const active = this.enemies.activeEnemies.length;
+      hud.setObjective(`${this.enemies.waveLabel} · ${active} left`);
+    }
+    // Detect new wave transitions
+    if (this.enemies.currentWave > this.lastWaveShown && this.enemies.activeEnemies.length + this.enemies.allEnemies.length > 0) {
+      this.lastWaveShown = this.enemies.currentWave;
+      const title = this.enemies.waveLabel.replace(/^Wave \d+\s*[—-]\s*/, "").trim() || "Incoming";
+      hud.showWaveBanner(this.enemies.currentWave, title);
+    }
+    // Combo badge
+    if (this.kill_streak > 1 && this.killStreakTimer > 0) {
+      const mult = 1 + Math.min(this.kill_streak - 1, 4) * 0.25;
+      hud.showCombo(mult, this.kill_streak);
+    } else {
+      hud.hideCombo();
+    }
+  }
+
+  private applyDamageToPlayer(amount: number) {
+    this.health = Math.max(0, this.health - amount);
+    hud.setHealth(this.health);
+    hud.flashCrosshairMiss();
+    this.triggerScreenShake(0.2);
+    if (this.health <= 0) {
+      this.setStatus("Down! Wave resetting...");
+      this.health = 100;
+      this.enemies.reset();
+      this.enemies.scheduleFirstWave(3.0);
+      hud.setHealth(this.health);
+    }
   }
 
   private updateTargets(dt: number) {
@@ -902,7 +1429,7 @@ class SunlitPatrol {
 
     const preShot = this.capturePreShotState();
     this.ammo -= 1;
-    this.shotCooldown = rifleTuning.cooldown;
+    this.shotCooldown = this.activeTuning.cooldown;
     this.impactPulse = 1;
     this.animation.fadeTo("Shoot_OneHanded", true);
     this.playFirstPersonFireAnimation();
@@ -913,16 +1440,30 @@ class SunlitPatrol {
     const shot = this.resolveRifleShot(muzzle);
     const visualMuzzle = this.getVisualMuzzleWorldPosition(shot.direction);
     this.effects.spawnMuzzleBurst(visualMuzzle, shot.direction, this.cameraMode === "first");
-    this.effects.spawnTracer(visualMuzzle, shot.point);
-    this.effects.spawnShellEjection(visualMuzzle, shot.direction);
+    this.animeFx.spawnMuzzleBurst(visualMuzzle, shot.direction);
+    this.triggerScreenShake(0.08);
+    this.broadcastFire(visualMuzzle, shot.direction);
     this.logShotTelemetry(muzzle, visualMuzzle, shot, preShot);
     this.spawnDebugShotMarkers(muzzle, visualMuzzle, shot.point);
-    if (shot.target) {
-      this.damageTarget(shot.target, shot.point);
+
+    // Check for enemy hit along the same ray — enemies take priority over targets
+    this.raycaster.set(shot.origin, shot.direction);
+    this.raycaster.far = this.activeTuning.range;
+    const enemyHit = this.enemies.raycastHit(this.raycaster);
+    const enemyCloser = enemyHit && enemyHit.distance < (shot.hitDistance ?? shot.rangeDistance);
+    if (enemyCloser && enemyHit) {
+      this.effects.spawnTracer(visualMuzzle, enemyHit.hitPoint);
+      this.effects.spawnShellEjection(visualMuzzle, shot.direction);
+      this.damageEnemy(enemyHit.enemy, enemyHit.hitPoint, enemyHit.headshot);
     } else {
-      this.sound.playDryImpact();
-      this.effects.spawnImpact(shot.point, palette.cream);
-      this.setStatus("Range impact");
+      this.effects.spawnTracer(visualMuzzle, shot.point);
+      this.effects.spawnShellEjection(visualMuzzle, shot.direction);
+      if (shot.target) {
+        this.damageTarget(shot.target, shot.point);
+      } else {
+        this.sound.playDryImpact();
+        this.effects.spawnImpact(shot.point, palette.cream);
+      }
     }
     this.applyShotRecoil();
 
@@ -976,12 +1517,12 @@ class SunlitPatrol {
     baseDirection.normalize();
 
     const moving = this.playerVelocity.lengthSq() > 0.35;
-    const spread = moving ? rifleTuning.movingSpread : rifleTuning.hipSpread;
+    const spread = moving ? this.activeTuning.movingSpread : this.activeTuning.hipSpread;
     const direction = this.applySpread(baseDirection, spread);
     const origin = muzzle.clone().addScaledVector(direction, 0.2);
     this.raycaster.set(origin, direction);
     this.raycaster.near = 0;
-    this.raycaster.far = rifleTuning.range;
+    this.raycaster.far = this.activeTuning.range;
 
     const hit = this.raycaster.intersectObjects(this.getActiveTargetMeshes(), true)[0];
     if (hit) {
@@ -1006,7 +1547,7 @@ class SunlitPatrol {
     const groundPoint = new THREE.Vector3();
     if (this.raycaster.ray.intersectPlane(this.groundPlane, groundPoint)) {
       const distance = groundPoint.distanceTo(origin);
-      if (distance > 0.45 && distance <= rifleTuning.range) {
+      if (distance > 0.45 && distance <= this.activeTuning.range) {
         return {
           direction,
           point: groundPoint,
@@ -1028,7 +1569,7 @@ class SunlitPatrol {
 
     return {
       direction,
-      point: origin.clone().addScaledVector(direction, rifleTuning.range),
+      point: origin.clone().addScaledVector(direction, this.activeTuning.range),
       target: undefined,
       aimPoint: aimPoint.clone(),
       baseDirection: baseDirection.clone(),
@@ -1038,7 +1579,7 @@ class SunlitPatrol {
       hitObjectName: null,
       hitDistance: null,
       groundDistance: null,
-      rangeDistance: rifleTuning.range,
+      rangeDistance: this.activeTuning.range,
       result: "range",
       aimTrace
     };
@@ -1050,7 +1591,7 @@ class SunlitPatrol {
     const aimDirection = cameraRay.direction;
     this.raycaster.set(origin, aimDirection);
     this.raycaster.near = 0;
-    this.raycaster.far = rifleTuning.range;
+    this.raycaster.far = this.activeTuning.range;
 
     const targetHit = this.raycaster.intersectObjects(this.getActiveTargetMeshes(), true)[0];
     if (targetHit) {
@@ -1067,7 +1608,7 @@ class SunlitPatrol {
     const groundPoint = new THREE.Vector3();
     if (this.raycaster.ray.intersectPlane(this.groundPlane, groundPoint)) {
       const distance = groundPoint.distanceTo(origin);
-      if (distance > 0.45 && distance <= rifleTuning.range) {
+      if (distance > 0.45 && distance <= this.activeTuning.range) {
         return {
           origin,
           direction: aimDirection,
@@ -1082,7 +1623,7 @@ class SunlitPatrol {
     return {
       origin,
       direction: aimDirection,
-      point: origin.clone().addScaledVector(aimDirection, rifleTuning.range),
+      point: origin.clone().addScaledVector(aimDirection, this.activeTuning.range),
       hitObjectName: null,
       hitDistance: null,
       result: "range"
@@ -1116,10 +1657,10 @@ class SunlitPatrol {
   }
 
   private applyShotRecoil() {
-    this.pitch = THREE.MathUtils.clamp(this.pitch + rifleTuning.recoilPitch * 0.12, -0.48, 0.34);
-    this.yaw += (Math.random() - 0.5) * rifleTuning.recoilYaw * 0.2;
-    this.cameraRecoilPitch += rifleTuning.visualRecoilPitch;
-    this.cameraRecoilYaw += (Math.random() - 0.5) * rifleTuning.visualRecoilYaw;
+    this.pitch = THREE.MathUtils.clamp(this.pitch + this.activeTuning.recoilPitch * 0.12, -0.48, 0.34);
+    this.yaw += (Math.random() - 0.5) * this.activeTuning.recoilYaw * 0.2;
+    this.cameraRecoilPitch += this.activeTuning.visualRecoilPitch;
+    this.cameraRecoilYaw += (Math.random() - 0.5) * this.activeTuning.visualRecoilYaw;
     this.weaponKick = Math.min(0.42, this.weaponKick + 0.34);
     this.weaponKickSide = THREE.MathUtils.clamp(this.weaponKickSide + (Math.random() - 0.5) * 0.22, -0.28, 0.28);
   }
@@ -1187,7 +1728,7 @@ class SunlitPatrol {
     const cameraCenter = this.getCameraCenterRay();
     const aimDirection = shot.aimTrace.direction.clone();
     const centerGround = this.rayGroundPoint(cameraCenter.origin, cameraCenter.direction);
-    const centerRange = cameraCenter.origin.clone().addScaledVector(cameraCenter.direction, rifleTuning.range);
+    const centerRange = cameraCenter.origin.clone().addScaledVector(cameraCenter.direction, this.activeTuning.range);
     const shotRayMissFromCrosshair = this.distancePointToRay(shot.point, cameraCenter.origin, cameraCenter.direction);
     const muzzleRayMissFromCrosshair = this.distancePointToRay(muzzle, cameraCenter.origin, cameraCenter.direction);
     const frame = {
@@ -1256,12 +1797,12 @@ class SunlitPatrol {
       activeTargets: this.describeActiveTargets(),
       recentEvents: this.debug.getEvents().slice(0, 8),
       tuning: {
-        range: rifleTuning.range,
-        cooldown: rifleTuning.cooldown,
-        hipSpread: rifleTuning.hipSpread,
-        movingSpread: rifleTuning.movingSpread,
-        recoilPitch: rifleTuning.recoilPitch,
-        recoilYaw: rifleTuning.recoilYaw
+        range: this.activeTuning.range,
+        cooldown: this.activeTuning.cooldown,
+        hipSpread: this.activeTuning.hipSpread,
+        movingSpread: this.activeTuning.movingSpread,
+        recoilPitch: this.activeTuning.recoilPitch,
+        recoilYaw: this.activeTuning.recoilYaw
       }
     };
 
@@ -1555,18 +2096,57 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     return undefined;
   }
 
+  private damageEnemy(enemy: Enemy, point: THREE.Vector3, headshot: boolean) {
+    const damage = this.activeTuning.damage;
+    const result = enemy.takeDamage(damage, headshot);
+    const displayDmg = Math.round(result.damageDealt);
+    const shouldCrit = headshot || result.killed;
+    this.animeFx.spawnHitSpark(point, shouldCrit);
+    this.animeFx.spawnDamageNumber(point.clone().add(new THREE.Vector3(0, 0.4, 0)), this.camera, displayDmg, shouldCrit);
+    this.sound.playHit(result.killed);
+    this.triggerScreenShake(shouldCrit ? 0.35 : 0.12);
+    this.score += Math.round(damage * 5);
+    if (result.killed) {
+      const info = this.enemies.registerKill(enemy);
+      this.kill_streak += 1;
+      this.killStreakTimer = 3.2;
+      const multiplier = 1 + Math.min(this.kill_streak - 1, 4) * 0.25;
+      this.score += Math.round(info.scoreAwarded * multiplier);
+      const centerPos = enemy.getWorldCenter();
+      this.animeFx.spawnPolygonShatter(centerPos, enemy.archetype.primary);
+      this.timeScale = headshot ? 0.22 : 0.32;
+      this.triggerScreenShake(0.55);
+      this.setStatus(`${enemy.archetype.displayName} down · ×${multiplier.toFixed(2)}`);
+      window.setTimeout(() => this.enemies.removeEnemy(enemy), 280);
+    } else {
+      this.setStatus(headshot ? "HEADSHOT!" : `Hit ${enemy.archetype.displayName}`);
+    }
+    hud.flashCrosshairHit();
+    this.updateHud();
+  }
+
   private damageTarget(target: Target, point: THREE.Vector3) {
     if (!target.active) return;
-    target.hp -= rifleTuning.damage;
+    const damage = this.activeTuning.damage;
+    const willKill = target.hp - damage <= 0;
+    target.hp -= damage;
     this.score += 10;
     target.root.scale.multiplyScalar(0.92);
     this.effects.spawnImpact(point, target.hp <= 0 ? palette.coral : palette.teal);
+    this.animeFx.spawnHitSpark(point, willKill);
+    this.animeFx.spawnDamageNumber(point.clone().add(new THREE.Vector3(0, 0.3, 0)), this.camera, damage, willKill);
     this.sound.playHit(target.hp <= 0);
+    this.triggerScreenShake(willKill ? 0.4 : 0.15);
 
     if (target.hp <= 0) {
       target.active = false;
       target.root.visible = false;
       this.score += 40;
+      const centerPos = new THREE.Vector3();
+      target.root.getWorldPosition(centerPos);
+      this.animeFx.spawnPolygonShatter(centerPos, animePalette.neonPink);
+      this.timeScale = 0.28;
+      this.triggerScreenShake(0.5);
       this.setStatus("Target down");
     } else {
       this.setStatus("Hit confirmed");
@@ -1575,19 +2155,26 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
     this.updateHud();
   }
 
+  private screenShakeAmount = 0;
+  private triggerScreenShake(amount: number) {
+    this.screenShakeAmount = Math.min(this.screenShakeAmount + amount, 0.8);
+  }
+
   private reload() {
-    if (this.ammo === 12 || this.reloadTimer > 0) return;
+    const tuning = this.activeTuning;
+    if (this.ammo === tuning.magSize || this.reloadTimer > 0) return;
     this.sound.playReloadStart();
-    this.reloadTimer = 0.8;
-    this.reloadAnimTimer = 0.8;
+    this.reloadTimer = tuning.reloadTime;
+    this.reloadAnimTimer = tuning.reloadTime;
     this.input.releaseAim();
     this.animation.fadeTo("Reload", true);
+    const reloadWeaponId = this.currentWeaponId;
     window.setTimeout(() => {
-      this.ammo = 12;
+      this.weaponAmmo[reloadWeaponId] = weaponLoadout[reloadWeaponId].magSize;
       this.sound.playReloadEnd();
       this.updateHud();
       this.setStatus("Reloaded");
-    }, 800);
+    }, tuning.reloadTime * 1000);
     this.setStatus("Reloading");
     this.updateHud();
   }
@@ -1629,7 +2216,7 @@ socket world=${JSON.stringify(frame.weaponSocket?.world ?? null)} hand world=${J
 
   private updateHud() {
     hud.setScore(this.score);
-    hud.setAmmo(this.ammo, this.reloadTimer > 0, this.grenadeAmmo);
+    hud.setAmmo(this.ammo, this.reloadTimer > 0, this.grenadeAmmo, this.activeTuning.magSize, this.activeTuning.displayName);
     hud.setHealth(this.health);
   }
 }

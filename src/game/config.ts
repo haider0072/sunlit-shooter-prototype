@@ -95,6 +95,76 @@ export const rifleTuning = {
   visualRecoilYaw: 0.005
 } as const;
 
+export type WeaponId = "rifle" | "pistol" | "smg";
+
+export type WeaponTuning = {
+  id: WeaponId;
+  displayName: string;
+  damage: number;
+  range: number;
+  cooldown: number;
+  hipSpread: number;
+  movingSpread: number;
+  recoilPitch: number;
+  recoilYaw: number;
+  visualRecoilPitch: number;
+  visualRecoilYaw: number;
+  magSize: number;
+  reloadTime: number;
+  tint: string;
+};
+
+export const weaponLoadout: Record<WeaponId, WeaponTuning> = {
+  rifle: {
+    id: "rifle",
+    displayName: "Sakura Rifle",
+    damage: 1,
+    range: 96,
+    cooldown: 0.105,
+    hipSpread: 0.035,
+    movingSpread: 0.12,
+    recoilPitch: 0.006,
+    recoilYaw: 0.004,
+    visualRecoilPitch: 0.014,
+    visualRecoilYaw: 0.005,
+    magSize: 12,
+    reloadTime: 0.8,
+    tint: "#3f6f55"
+  },
+  pistol: {
+    id: "pistol",
+    displayName: "Neon Sidearm",
+    damage: 2,
+    range: 72,
+    cooldown: 0.18,
+    hipSpread: 0.028,
+    movingSpread: 0.08,
+    recoilPitch: 0.012,
+    recoilYaw: 0.008,
+    visualRecoilPitch: 0.022,
+    visualRecoilYaw: 0.008,
+    magSize: 8,
+    reloadTime: 0.65,
+    tint: "#ff3e9a"
+  },
+  smg: {
+    id: "smg",
+    displayName: "Rush SMG",
+    damage: 1,
+    range: 52,
+    cooldown: 0.065,
+    hipSpread: 0.06,
+    movingSpread: 0.14,
+    recoilPitch: 0.004,
+    recoilYaw: 0.005,
+    visualRecoilPitch: 0.01,
+    visualRecoilYaw: 0.006,
+    magSize: 24,
+    reloadTime: 0.95,
+    tint: "#39f0ff"
+  }
+};
+
 export const cameraTuning = {
   thirdPerson: {
     minPitch: -0.2,

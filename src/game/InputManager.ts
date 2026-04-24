@@ -14,6 +14,8 @@ export type InputHandlers = {
   onPointerLockChange: (locked: boolean, element: Element | null) => void;
   onResize: () => void;
   onFocusLost: (reason: "blur" | "hidden") => void;
+  onWeaponSlot: (slot: 1 | 2 | 3) => void;
+  onPause?: () => void;
 };
 
 export class InputManager {
@@ -56,6 +58,12 @@ export class InputManager {
       if (ke.code === "Space") {
         ke.preventDefault();
         handlers.onJump();
+      }
+      if (!ke.repeat) {
+        if (ke.code === "Digit1") handlers.onWeaponSlot(1);
+        else if (ke.code === "Digit2") handlers.onWeaponSlot(2);
+        else if (ke.code === "Digit3") handlers.onWeaponSlot(3);
+        else if (ke.code === "Escape") handlers.onPause?.();
       }
     });
 

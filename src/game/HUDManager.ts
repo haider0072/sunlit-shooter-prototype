@@ -39,8 +39,9 @@ export class HUDManager {
     this.score.textContent = `${value}`;
   }
 
-  setAmmo(current: number, reloading: boolean, grenades: number) {
-    this.ammo.textContent = reloading ? "..." : `${current} / 12  G:${grenades}`;
+  setAmmo(current: number, reloading: boolean, grenades: number, magSize = 12, weaponLabel?: string) {
+    const label = weaponLabel ? `${weaponLabel} · ` : "";
+    this.ammo.textContent = reloading ? `${label}...` : `${label}${current} / ${magSize}  G:${grenades}`;
   }
 
   setHealth(value: number) {
@@ -96,5 +97,45 @@ export class HUDManager {
     this.volumeSlider.addEventListener("input", () => {
       cb(Number(this.volumeSlider.value) / 100);
     });
+  }
+
+  showWaveBanner(number: number, title: string, durationMs = 1800) {
+    const banner = document.getElementById("waveBanner");
+    const num = document.getElementById("waveBannerNumber");
+    const subtitle = document.getElementById("waveBannerTitle");
+    if (!banner || !num || !subtitle) return;
+    num.textContent = `${number}`;
+    subtitle.textContent = title;
+    banner.setAttribute("aria-hidden", "false");
+    window.clearTimeout((banner as HTMLElement & { _hideT?: number })._hideT);
+    (banner as HTMLElement & { _hideT?: number })._hideT = window.setTimeout(() => {
+      banner.setAttribute("aria-hidden", "true");
+    }, durationMs);
+  }
+
+  showCombo(multiplier: number, kills: number) {
+    const badge = document.getElementById("comboBadge");
+    const mult = document.getElementById("comboMult");
+    const count = document.getElementById("comboKills");
+    if (!badge || !mult || !count) return;
+    mult.textContent = `×${multiplier.toFixed(2)}`;
+    count.textContent = `${kills} kill${kills === 1 ? "" : "s"}`;
+    badge.setAttribute("aria-hidden", "false");
+  }
+
+  hideCombo() {
+    const badge = document.getElementById("comboBadge");
+    badge?.setAttribute("aria-hidden", "true");
+  }
+
+  setPause(open: boolean) {
+    const menu = document.getElementById("pauseMenu");
+    menu?.setAttribute("aria-hidden", open ? "false" : "true");
+  }
+
+  onPauseMenu(handlers: { resume: () => void; restart: () => void; quit: () => void }) {
+    document.getElementById("pauseResume")?.addEventListener("click", handlers.resume);
+    document.getElementById("pauseRestart")?.addEventListener("click", handlers.restart);
+    document.getElementById("pauseQuit")?.addEventListener("click", handlers.quit);
   }
 }
