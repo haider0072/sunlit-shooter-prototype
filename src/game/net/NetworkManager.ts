@@ -1,19 +1,34 @@
 import Peer, { type DataConnection } from "peerjs";
 import type { WeaponId } from "../config";
 
-// PeerJS config: explicit Google STUN servers for better NAT traversal,
-// plus debug level for early-signal diagnostics.
-const PEER_OPTIONS = {
-  debug: 1,
-  config: {
-    iceServers: [
-      { urls: "stun:stun.l.google.com:19302" },
-      { urls: "stun:stun1.l.google.com:19302" },
-      { urls: "stun:stun2.l.google.com:19302" },
-      { urls: "stun:global.stun.twilio.com:3478" }
-    ]
-  }
-} as const;
+// PeerJS config: explicit Google STUN servers + optional custom broker override.
+// Override via URL params: ?peer=host-without-scheme&peerPath=/peerjs&peerSecure=1
+function resolvePeerOptions() {
+  const base: Record<string, unknown> = {
+    debug: 1,
+    config: {
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
+        { urls: "stun:global.stun.twilio.com:3478" }
+      ]
+    }
+  };
+  if (typeof window === "undefined") return base;
+  const params = new URLSearchParams(window.location.search);
+  const host = params.get("peer");
+  if (!host) return base;
+  base.host = host;
+  base.path = params.get("peerPath") ?? "/peerjs";
+  const secureParam = params.get("peerSecure");
+  const port = params.get("peerPort");
+  if (port) base.port = Number(port);
+  if (secureParam === "0") base.secure = false;
+  else base.secure = true;
+  return base;
+}
+const PEER_OPTIONS = resolvePeerOptions();
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
