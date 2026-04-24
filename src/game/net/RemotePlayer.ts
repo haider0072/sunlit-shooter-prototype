@@ -16,6 +16,8 @@ export class RemotePlayer {
   private targetYaw = 0;
   private bob = 0;
   private lastUpdateT = 0;
+  private bodyRoot: THREE.Object3D | null = null;
+  private usingChibiFallback = false;
 
   constructor(id: string, characterTemplate?: THREE.Object3D) {
     this.id = id;
@@ -40,6 +42,7 @@ export class RemotePlayer {
           mesh.receiveShadow = true;
         }
       });
+      this.bodyRoot = clone;
       this.group.add(clone);
 
       // Weapon socket positioned like player's right hand-ish area
@@ -48,7 +51,9 @@ export class RemotePlayer {
       this.weaponSocket.scale.setScalar(0.55);
       this.group.add(this.weaponSocket);
     } else {
-      // Fallback chibi body
+      this.usingChibiFallback = true;
+      const chibi = new THREE.Group();
+      chibi.name = "ChibiFallback";
       const bodyMat = createToonMaterial({
         color: animePalette.allyBlue,
         shadowColor: "#1f4a7a",
@@ -61,27 +66,30 @@ export class RemotePlayer {
       body.position.y = 0.92;
       body.castShadow = true;
       body.receiveShadow = true;
-      this.group.add(body);
+      chibi.add(body);
 
       const headMat = createToonMaterial({ color: "#ffe4cc", shadowColor: "#b3866a", steps: 4, rimStrength: 0.18 });
       const head = new THREE.Mesh(new THREE.SphereGeometry(0.42, 14, 12), headMat);
       head.position.y = 1.82;
       head.castShadow = true;
-      this.group.add(head);
+      chibi.add(head);
 
       const armMat = bodyMat.clone();
       const leftArm = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.72, 0.2), armMat);
       leftArm.position.set(-0.5, 1.0, 0);
       const rightArm = leftArm.clone();
       rightArm.position.x = 0.5;
-      this.group.add(leftArm, rightArm);
+      chibi.add(leftArm, rightArm);
 
       const legMat = createToonMaterial({ color: "#1d2f4a", shadowColor: "#080f1a", steps: 3, rimStrength: 0.1 });
       const leftLeg = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.6, 0.24), legMat);
       leftLeg.position.set(-0.18, 0.3, 0);
       const rightLeg = leftLeg.clone();
       rightLeg.position.x = 0.18;
-      this.group.add(leftLeg, rightLeg);
+      chibi.add(leftLeg, rightLeg);
+
+      this.bodyRoot = chibi;
+      this.group.add(chibi);
 
       this.weaponSocket.position.set(0.5, 1.1, 0.1);
       this.weaponSocket.rotation.set(0, 0, 0);
@@ -116,6 +124,44 @@ export class RemotePlayer {
     shadow.position.set(0, 0.02, 0);
     shadow.scale.set(1.5, 1.5, 1);
     this.group.add(shadow);
+  }
+
+  upgradeCharacter(characterTemplate: THREE.Object3D) {
+    if (!this.usingChibiFallback) return;
+    if (this.bodyRoot) {
+      this.group.remove(this.bodyRoot);
+      this.bodyRoot.traverse((child) => {
+        const mesh = child as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.geometry?.dispose();
+          const mat = mesh.material;
+          if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+          else mat?.dispose();
+        }
+      });
+    }
+    const clone = characterTemplate.clone(true);
+    applyToonToObject(clone, {
+      color: animePalette.allyBlue,
+      shadowColor: "#1f4a7a",
+      steps: 3,
+      rimColor: "#dff6ff",
+      rimStrength: 0.32,
+      rimWidth: 0.35
+    });
+    clone.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (mesh.isMesh) {
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+      }
+    });
+    this.bodyRoot = clone;
+    this.group.add(clone);
+    this.weaponSocket.position.set(0.45, 1.2, 0.15);
+    this.weaponSocket.rotation.set(0, THREE.MathUtils.degToRad(-85), 0);
+    this.weaponSocket.scale.setScalar(0.55);
+    this.usingChibiFallback = false;
   }
 
   applyState(state: PeerStatePayload) {
